@@ -15,7 +15,7 @@
 #!/usr/bin/env python
 import os
 import multiprocessing
-import librosa
+# import librosa
 import functools
 
 import sox
@@ -23,15 +23,17 @@ import sox
 
 from tqdm import tqdm
 
+# 单文件处理
 def preprocess(data, input_dir, dest_dir, target_sr=None, speed=None,
                overwrite=True):
     speed = speed or []
     speed.append(1)
     speed = list(set(speed))  # Make uniqe
-
+    # 音频文件
     input_fname = os.path.join(input_dir,
                                data['input_relpath'],
                                data['input_fname'])
+    # 获取文件sample rate
     input_sr = sox.file_info.sample_rate(input_fname)
     target_sr = target_sr or input_sr
 
@@ -40,16 +42,18 @@ def preprocess(data, input_dir, dest_dir, target_sr=None, speed=None,
     output_dict = {}
     output_dict['transcript'] = data['transcript'].lower().strip()
     output_dict['files'] = []
-
+    # 分离文件名或扩展名，并返回文件名
     fname = os.path.splitext(data['input_fname'])[0]
     for s in speed:
         output_fname = fname + '{}.wav'.format('' if s==1 else '-{}'.format(s))
+        # 输出文件
         output_fpath = os.path.join(dest_dir,
                                     data['input_relpath'],
                                     output_fname)
 
         if not os.path.exists(output_fpath) or overwrite:
             cbn = sox.Transformer().speed(factor=s).convert(target_sr)
+            # 将音频转换为.wav格式
             cbn.build(input_fname, output_fpath)
 
         file_info = sox.file_info.info(output_fpath)
@@ -68,9 +72,12 @@ def preprocess(data, input_dir, dest_dir, target_sr=None, speed=None,
 
 
 def parallel_preprocess(dataset, input_dir, dest_dir, target_sr, speed, overwrite, parallel):
+    # 创建进程池
     with multiprocessing.Pool(parallel) as p:
+        # 固定函数的部分参数
         func = functools.partial(preprocess,
             input_dir=input_dir, dest_dir=dest_dir,
             target_sr=target_sr, speed=speed, overwrite=overwrite)
+        # pool.map map函数；tqdm是一个进度条库
         dataset = list(tqdm(p.imap(func, dataset), total=len(dataset)))
         return dataset

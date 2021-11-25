@@ -14,7 +14,7 @@
 
 import sentencepiece as spm
 
-
+# 对句子进行encode和decode
 class Tokenizer:
     def __init__(self, labels, sentpiece_model=None):
         """Converts transcript to a sequence of tokens.

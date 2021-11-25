@@ -24,7 +24,9 @@ from .model import RNNT
 
 
 def default_args(klass):
+    # 提取函数签名
     sig = inspect.signature(klass.__init__)
+    # 返回参数名：默认值
     return {k: v.default for k,v in sig.parameters.items() if k != 'self'}
 
 
@@ -46,10 +48,11 @@ def load(fpath, max_duration=None):
 
     return cfg
 
-
+# 构造构造函数的参数字典
 def validate_and_fill(klass, user_conf, ignore=[], optional=[]):
+    # 返回构造函数的参数名：默认值
     conf = default_args(klass)
-
+    # 用user_conf覆盖conf中的内容
     for k,v in user_conf.items():
         assert k in conf or k in ignore, f'Unknown parameter {k} for {klass}'
         conf[k] = v

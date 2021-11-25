@@ -18,6 +18,7 @@ def get_model(model_path):
     return spm.SentencePieceProcessor(model_file=model_path)
 
 def get_outputs(inputs, output_dir, suffix, output_format):
+    # 分离文件对应的文件夹和文件名，不包含扩展名（i->["dir", "file"]）
     fnames = (i[:-len('.json')].rsplit('/', maxsplit=1) for i in inputs)
     return [f'{output_dir or dirname}/{fname}{suffix}.{output_format}' for dirname, fname in fnames]
 
@@ -43,8 +44,11 @@ def transform(model, inputs, outputs, output_format):
 
 def main():
     args = get_parser().parse_args()
+    # 获取sentencepiece模型
     model = get_model(args.model)
+    # 返回output文件，每个json对应一个输出文件
     outputs = get_outputs(args.JSONS, args.output_dir, args.suffix, args.output_format)
+    # 将文本内容encode并保存到pickle文件
     transform(model, args.JSONS, outputs, args.output_format)
 
 

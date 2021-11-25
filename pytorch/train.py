@@ -389,12 +389,14 @@ def main():
             dali_seed = args.seed
 
     init_log(args)
+    # 配置在configs文件夹中，为yaml文件
     cfg = config.load(args.model_config)
     config.apply_duration_flags(cfg, args.max_duration)
 
     assert args.grad_accumulation_steps >= 1
     assert args.batch_size % args.grad_accumulation_steps == 0, f'{args.batch_size} % {args.grad_accumulation_steps} != 0'
     logging.log_event(logging.constants.GRADIENT_ACCUMULATION_STEPS, value=args.grad_accumulation_steps)
+    # args中设置的batch size是bs * grad_accu，
     batch_size = args.batch_size // args.grad_accumulation_steps
     if args.batch_split_factor != 1:
         assert batch_size % args.batch_split_factor == 0, f'{batch_size} % {args.batch_split_factor} != 0'
@@ -407,7 +409,7 @@ def main():
     logging.log_event(logging.constants.SUBMISSION_STATUS, value=logging.constants.ONPREM) # on-prem/cloud/research
     logging.log_event(logging.constants.SUBMISSION_PLATFORM, value=f'{num_nodes}xSUBMISSION_PLATFORM_PLACEHOLDER')
 
-    # set up the model
+    # set up the model，获取tokenizer
     tokenizer_kw = config.tokenizer(cfg)
     tokenizer = Tokenizer(**tokenizer_kw)
 
@@ -426,9 +428,11 @@ def main():
     if args.apex_mlp:
         rnnt_config["apex_mlp"] = True
     enc_stack_time_factor = rnnt_config["enc_stack_time_factor"]
+    # 创建模型
     model = RNNT(n_classes=tokenizer.num_labels + 1, **rnnt_config)
     model.cuda()
     blank_idx = tokenizer.num_labels
+    # 创建loss function
     if args.apex_transducer_loss == None:
         loss_fn = RNNTLoss(blank_idx=blank_idx)
     else:
@@ -455,6 +459,7 @@ def main():
     
     # set up optimization
     opt_eps=1e-9
+    # 创建optimizer
     if args.dist_lamb:
         model.half()
         initial_lrs = args.lr * torch.tensor(1, device='cuda', dtype=torch.float)
@@ -501,7 +506,7 @@ def main():
             step, epoch, initial_lrs, optimizer, steps_per_epoch=steps_per_epoch,
             warmup_epochs=args.warmup_epochs, hold_epochs=args.hold_epochs,
             min_lr=args.min_lr, exp_gamma=args.lr_exp_gamma, dist_lamb=args.dist_lamb)
-
+    # data parallel
     if not args.dist_lamb and multi_gpu:
         model = DistributedDataParallel(model)
 
@@ -836,7 +841,7 @@ def main():
                 adjust_lr(step, epoch)
                 step_utts = 0
                 all_feat_lens = []
-
+            # feature proc
             if args.enable_prefetch:
                 # when prefetch is enabled, train_feat_proc at prefetch time
                 feats, feat_lens, txt, txt_lens = batch

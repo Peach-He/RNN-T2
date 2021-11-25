@@ -14,39 +14,41 @@
 
 #!/usr/bin/env bash
 
+DATA_DIR="/mnt/sdd/LibriSpeech/LibriSpeech"
+
 python ./utils/convert_librispeech.py \
-    --input_dir /datasets/LibriSpeech/train-clean-100 \
-    --dest_dir /datasets/LibriSpeech/train-clean-100-wav \
-    --output_json /datasets/LibriSpeech/librispeech-train-clean-100-wav.json
+    --input_dir ${DATA_DIR}/train-clean-100 \
+    --dest_dir ${DATA_DIR}/train-clean-100-wav \
+    --output_json ${DATA_DIR}/librispeech-train-clean-100-wav.json
 python ./utils/convert_librispeech.py \
-    --input_dir /datasets/LibriSpeech/train-clean-360 \
-    --dest_dir /datasets/LibriSpeech/train-clean-360-wav \
-    --output_json /datasets/LibriSpeech/librispeech-train-clean-360-wav.json
+    --input_dir ${DATA_DIR}/train-clean-360 \
+    --dest_dir ${DATA_DIR}/train-clean-360-wav \
+    --output_json ${DATA_DIR}/librispeech-train-clean-360-wav.json
 python ./utils/convert_librispeech.py \
-    --input_dir /datasets/LibriSpeech/train-other-500 \
-    --dest_dir /datasets/LibriSpeech/train-other-500-wav \
-    --output_json /datasets/LibriSpeech/librispeech-train-other-500-wav.json
+    --input_dir ${DATA_DIR}/train-other-500 \
+    --dest_dir ${DATA_DIR}/train-other-500-wav \
+    --output_json ${DATA_DIR}/librispeech-train-other-500-wav.json
 
 
 python ./utils/convert_librispeech.py \
-    --input_dir /datasets/LibriSpeech/dev-clean \
-    --dest_dir /datasets/LibriSpeech/dev-clean-wav \
-    --output_json /datasets/LibriSpeech/librispeech-dev-clean-wav.json
+    --input_dir ${DATA_DIR}/dev-clean \
+    --dest_dir ${DATA_DIR}/dev-clean-wav \
+    --output_json ${DATA_DIR}/librispeech-dev-clean-wav.json
 python ./utils/convert_librispeech.py \
-    --input_dir /datasets/LibriSpeech/dev-other \
-    --dest_dir /datasets/LibriSpeech/dev-other-wav \
-    --output_json /datasets/LibriSpeech/librispeech-dev-other-wav.json
+    --input_dir ${DATA_DIR}/dev-other \
+    --dest_dir ${DATA_DIR}/dev-other-wav \
+    --output_json ${DATA_DIR}/librispeech-dev-other-wav.json
 
 
 python ./utils/convert_librispeech.py \
-    --input_dir /datasets/LibriSpeech/test-clean \
-    --dest_dir /datasets/LibriSpeech/test-clean-wav \
-    --output_json /datasets/LibriSpeech/librispeech-test-clean-wav.json
+    --input_dir ${DATA_DIR}/test-clean \
+    --dest_dir ${DATA_DIR}/test-clean-wav \
+    --output_json ${DATA_DIR}/librispeech-test-clean-wav.json
 python ./utils/convert_librispeech.py \
-    --input_dir /datasets/LibriSpeech/test-other \
-    --dest_dir /datasets/LibriSpeech/test-other-wav \
-    --output_json /datasets/LibriSpeech/librispeech-test-other-wav.json
+    --input_dir ${DATA_DIR}/test-other \
+    --dest_dir ${DATA_DIR}/test-other-wav \
+    --output_json ${DATA_DIR}/librispeech-test-other-wav.json
 
 bash scripts/create_sentencepieces.sh /sentencepieces
 
-python scripts/tokenize_transcripts.py --output_dir /metadata/ --model /sentencepieces/librispeech1023.model /datasets/LibriSpeech/librispeech-*.json
+python scripts/tokenize_transcripts.py --output_dir /metadata/ --model /sentencepieces/librispeech1023.model ${DATA_DIR}/librispeech-*.json

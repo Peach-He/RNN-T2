@@ -19,7 +19,7 @@ import torch
 from torch.nn import Parameter
 from mlperf import logging
 
-
+# 返回LSTM module
 def rnn(input_size, hidden_size, num_layers,
         forget_gate_bias=1.0, dropout=0.0,
         decoupled=False, **kwargs):

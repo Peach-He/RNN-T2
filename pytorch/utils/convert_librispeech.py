@@ -46,10 +46,12 @@ args.input_dir = args.input_dir.rstrip('/')
 args.dest_dir = args.dest_dir.rstrip('/')
 
 def build_input_arr(input_dir):
+    # 返回所有匹配条件的文件
     txt_files = glob.glob(os.path.join(input_dir, '**', '*.trans.txt'),
                           recursive=True)
     input_data = []
     for txt_file in txt_files:
+        # 获取文件相对路径, rel_path: num/num/*.trans.txt
         rel_path = os.path.relpath(txt_file, input_dir)
         with open(txt_file) as fp:
             for line in fp:
@@ -61,9 +63,11 @@ def build_input_arr(input_dir):
 
 
 print("[%s] Scaning input dir..." % args.output_json)
+# dataset: {input_relpath: num/num, input_fname: num.flac, transcript: ....}
 dataset = build_input_arr(input_dir=args.input_dir)
 
 print("[%s] Converting audio files..." % args.output_json)
+# {transcript：语音内容； files：转换后文件的file info； original_duration： 原始文件duration；original_num_samples：原始文件samples}
 dataset = parallel_preprocess(dataset=dataset,
                               input_dir=args.input_dir,
                               dest_dir=args.dest_dir,
@@ -77,5 +81,6 @@ df = pd.DataFrame(dataset, dtype=object)
 
 # Save json with python. df.to_json() produces back slashed in file paths
 dataset = df.to_dict(orient='records')
+# 保存格式转换后音频文件的metadata
 with open(args.output_json, 'w') as fp:
     json.dump(dataset, fp, indent=2)
