@@ -129,23 +129,13 @@ class RNNTGreedyDecoder:
         with torch.no_grad():
             ema_model_eval = self._handle_ema_model(ema_model)
             self.model = ema_model_eval
-            feats = torch.ones(dict_meta_data["batch"], dict_meta_data["max_feat_len"], self.rnnt_config["joint_n_hid"], dtype=torch.float16, device='cuda')
-            feat_lens = torch.ones(dict_meta_data["batch"], dtype=torch.int32, device='cuda') * dict_meta_data["max_feat_len"]
+            feats = torch.ones(dict_meta_data["batch"], dict_meta_data["max_feat_len"], self.rnnt_config["joint_n_hid"], dtype=torch.float16, device='cpu')
+            feat_lens = torch.ones(dict_meta_data["batch"], dtype=torch.int32, device='cpu') * dict_meta_data["max_feat_len"]
             self._capture_cg(feats, feat_lens)
 
     def update_ema_model_eval(self, ema_model):
         ema_model_eval = self._handle_ema_model(ema_model)
-        if type(self.batch_eval_mode) == str and self.batch_eval_mode.startswith("cg"): 
-            if self.cg_captured == False:
-                raise Exception("CUDA graph for eval should be captured first before updating")
-            else:
-                overflow_buf = torch.cuda.IntTensor([0])
-                amp_C.multi_tensor_scale(65536, overflow_buf, [list(ema_model_eval.parameters()), list(self.model.parameters())], 1.0)
-
-                # for p, p_eval in zip(self.model.parameters(), ema_model_eval.parameters()):
-                #     p.copy_(p_eval)
-        else:
-            self.model = ema_model_eval
+        self.model = ema_model_eval
 
     def decode(self, x, out_lens):
         if self.batch_eval_mode is None:

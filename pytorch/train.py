@@ -340,7 +340,7 @@ def main():
         # np_rng is used for buckets generation, and needs the same seed on every worker
         sampler_seed = args.seed
         if world_size > 1:
-            dali_seed = args.seed + dist.get_rank()
+            dali_seed = args.seed + dist.my_rank
         else:
             dali_seed = args.seed
 
@@ -721,7 +721,7 @@ def main():
                 if step % args.log_frequency == 0:
 
                     if args.prediction_frequency is None or step % args.prediction_frequency == 0:
-                        preds = greedy_decoder.decode(feats.half(), feat_lens)
+                        preds = greedy_decoder.decode(feats, feat_lens)
                         wer, pred_utt, ref = greedy_wer(
                                 preds,
                                 txt,

@@ -117,7 +117,7 @@ class SimpleSampler:
 
     def make_files(self, output_files):
         self.files, self.labels = self.process_output_files(output_files)
-
+    # outputfiles: {filename: {label:, duration:}}, transcripts: {label: tokenized_trans}
     def sample(self, file_names, in_mem_file_list, tokenized_transcript):
         output_files, self.transcripts = {}, {}
         max_duration = self.config_data['max_duration']
@@ -142,7 +142,7 @@ class SimpleSampler:
         else:
             self.make_file_list(output_files, file_names)
 
-
+# 设置的bs是local bs
 class BucketingSampler(SimpleSampler):
     def __init__(self, config_data, num_buckets, batch_size, num_workers, num_epochs, seed, dist_sampler, pre_sort):
         super(BucketingSampler, self).__init__(config_data, dist_sampler)

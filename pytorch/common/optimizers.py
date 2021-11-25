@@ -43,7 +43,7 @@ def lr_policy(step, epoch, initial_lr, optimizer, steps_per_epoch, warmup_epochs
         # we only have 1 param group now
         optimizer.param_groups[0]['lr'] = max(a * initial_lr, min_lr)
     else:
-        optimizer._lr = max(a * initial_lr, min_lr * torch.ones_like(initial_lr))
+        optimizer._lr = max(a * initial_lr, min_lr)
 
 
 class AdamW(Optimizer):

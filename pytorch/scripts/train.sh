@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2018-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,122 +14,217 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-: ${DATA_DIR:=${1:-"/mnt/sdd/LibriSpeech/LibriSpeech"}}
-: ${MODEL_CONFIG:=${2:-"configs/baseline_v3-1023sp.yaml"}}
-: ${OUTPUT_DIR:=${3:-"/results"}}
-: ${CHECKPOINT:=${4:-}}
-: ${CUDNN_BENCHMARK:=true}
-: ${NUM_GPUS:=2}
-: ${AMP:=false}
-: ${GLOBAL_BATCH_SIZE:=128}
-: ${VAL_BATCH_SIZE:=16}
-: ${GRAD_ACCUMULATION_STEPS:=8}
-: ${LEARNING_RATE:=0.004}
-: ${LR_EXP_GAMMA:=0.935}  # ~0.005 in 80 epochs
-: ${NUM_BUCKETS=6} # empty means to use torch.utils.data.distributed.DistributedSampler
-: ${EMA:=0.999}
-: ${SEED=1}
-: ${EPOCHS:=100}
-: ${WARMUP_EPOCHS:=6}  # 8000 steps with 1x8x24 should be ~5.6 epochs
-: ${HOLD_EPOCHS:=40}
-: ${SAVE_AT_THE_END:=false}
-: ${EPOCHS_THIS_JOB:=0}
-: ${RESUME:=true}
-: ${DALI_DEVICE:="cpu"}
-: ${VAL_FREQUENCY:=1}
-: ${PREDICTION_FREQUENCY:=1000}
-: ${BETA1:=0.9}
-: ${BETA2:=0.999}
-: ${LOG_FREQUENCY:=1}
-# : ${TRAIN_MANIFESTS:="$DATA_DIR/librispeech-train-clean-100-wav.json \
-#                       $DATA_DIR/librispeech-train-clean-360-wav.json \
-#                       $DATA_DIR/librispeech-train-other-500-wav.json"}
-: ${TRAIN_MANIFESTS:="$DATA_DIR/librispeech-train-clean-100-wav.json"}
-: ${VAL_MANIFESTS:="$DATA_DIR/librispeech-dev-clean-wav.json"}
-: ${LOG_NORM:=false}
-: ${USE_OLD_VAL:=true}
-: ${USE_NEW_VAL:=false}
-: ${MAX_SYMBOL_PER_SAMPLE=300}
-: ${WEIGHTS_INIT_SCALE=0.5}
-: ${CLIP_NORM:=1}
+# runs benchmark and reports time to convergence
+# to use the script:
+#   run_and_time.sh
 
-BATCH_SIZE=$(( $GLOBAL_BATCH_SIZE / $NUM_GPUS ))
-
-mkdir -p "$OUTPUT_DIR"
-
-ARGS="--dataset_dir=$DATA_DIR"
-ARGS+=" --val_manifests $VAL_MANIFESTS"
-ARGS+=" --train_manifests $TRAIN_MANIFESTS"
-ARGS+=" --model_config=$MODEL_CONFIG"
-ARGS+=" --output_dir=$OUTPUT_DIR"
-ARGS+=" --lr=$LEARNING_RATE"
-ARGS+=" --batch_size=$BATCH_SIZE"
-ARGS+=" --val_batch_size=$VAL_BATCH_SIZE"
-ARGS+=" --min_lr=1e-5"
-ARGS+=" --lr_exp_gamma=$LR_EXP_GAMMA"
-ARGS+=" --epochs=$EPOCHS"
-ARGS+=" --warmup_epochs=$WARMUP_EPOCHS"
-ARGS+=" --hold_epochs=$HOLD_EPOCHS"
-ARGS+=" --epochs_this_job=$EPOCHS_THIS_JOB"
-ARGS+=" --ema=$EMA"
-ARGS+=" --seed=$SEED"
-ARGS+=" --weight_decay=1e-3"
-ARGS+=" --log_frequency=$LOG_FREQUENCY"
-ARGS+=" --val_frequency=$VAL_FREQUENCY"
-ARGS+=" --grad_accumulation_steps=$GRAD_ACCUMULATION_STEPS "
-ARGS+=" --dali_device=$DALI_DEVICE"
-ARGS+=" --beta1=$BETA1"
-ARGS+=" --beta2=$BETA2"
-
-[ "$AMP" = true ] &&                 ARGS+=" --amp"
-[ "$RESUME" = true ] &&              ARGS+=" --resume"
-[ "$CUDNN_BENCHMARK" = true ] &&     ARGS+=" --cudnn_benchmark"
-[ "$LOG_NORM" = true ] &&            ARGS+=" --log_norm"
-[ "$SAVE_AT_THE_END" = true ] &&     ARGS+=" --save_at_the_end"
-[ -n "$CHECKPOINT" ] &&              ARGS+=" --ckpt=$CHECKPOINT"
-[ -n "$NUM_BUCKETS" ] &&             ARGS+=" --num_buckets=$NUM_BUCKETS"
-[ -n "$TARGET" ] &&                  ARGS+=" --target=$TARGET"
-[ -n "$CLIP_NORM" ] &&               ARGS+=" --clip_norm=$CLIP_NORM"
-[ -n "$PREDICTION_FREQUENCY" ] &&    ARGS+=" --prediction_frequency=$PREDICTION_FREQUENCY"
-[ -n "$SAVE_MILESTONES" ] &&         ARGS+=" --keep_milestones $SAVE_MILESTONES"
-[ -n "$SAVE_BEST" ] &&               ARGS+=" --save_best_from=$SAVE_BEST"
-[ -n "$SAVE_FREQUENCY" ] &&          ARGS+=" --save_frequency=$SAVE_FREQUENCY"
-[ -n "$START_CLIP" ] &&              ARGS+=" --start_clip=$START_CLIP"
-[ -n "$HIDDEN_HIDDEN_BIAS_SCALED" ] && ARGS+=" --hidden_hidden_bias_scale=$HIDDEN_HIDDEN_BIAS_SCALED"
-[ -n "$WEIGHTS_INIT_SCALE" ] &&      ARGS+=" --weights_init_scale=$WEIGHTS_INIT_SCALE"
-[ -n "$MAX_SYMBOL_PER_SAMPLE" ] &&  ARGS+=" --max_symbol_per_sample=$MAX_SYMBOL_PER_SAMPLE"
-
-# DISTRIBUTED=${DISTRIBUTED:-"-m torch.distributed.launch --nproc_per_node=$NUM_GPUS"}
-# python ${DISTRIBUTED} train.py ${ARGS} 2>&1 | tee log.log
-# echo ${ARGS}
-# python -u train.py ${ARGS} 2>&1 | tee log.log
-
-
-set -x
 set -e
 
-export CCL_WORKER_COUNT=2
-export CCL_WORKER_AFFINITY="0,1,18,19"
-export I_MPI_PIN_PROCESSOR_EXCLUDE_LIST="0,1,18,19"
+# Only rank print 
+[ "${SLURM_LOCALID-}" -ne 0 ] && set +x
+
+# 设置默认值
+: "${AMP_LVL:=1}"
+: "${DALIDEVICE:=cpu}"
+: "${MODELCONFIG:=configs/baseline_v3-1023sp.yaml}"
+: "${BATCHSIZE:=32}"
+: "${EVAL_BATCHSIZE:=32}"
+: "${EPOCH:=80}"
+: "${SEED:=30677}"
+: "${LR:=0.007}"
+: "${WARMUP:=6}"
+: "${GRAD_ACCUMULATION_STEPS:=1}"
+: "${VAL_FREQUENCY:=1}"
+: "${HOLD_EPOCHS:=33}"
+: "${EMA:=0.995}"
+: "${LR_DECAY_POWER:=0.939}"
+: "${WEIGHTS_INIT_SCALE:=0.5}"
+: "${DATASET_DIR:="/mnt/sdd/LibriSpeech/LibriSpeech"}"
+: "${DALI_ONLY:=false}"
+: "${VECTORIZED_SA:=true}"
+# : "${VECTORIZED_SAMPLER=true}"
+: "${LOG_FREQUENCY=1}"
+: "${BETA1:=0.9}"
+: "${BETA2:=0.999}"
+: "${MAX_TRAIN_DURATION:=16.7}"
+
+: "${MAX_SYMBOL:=300}"
+: "${DATA_CPU_THREADS:=16}"
+
+: "${FUSE_RELU_DROPOUT:=false}"
+: "${MULTI_TENSOR_EMA:=true}"
+# : "${BATCH_EVAL_MODE:=cg_unroll_pipeline}"
+# : "${APEX_LOSS:=fp16}"
+# : "${APEX_JOINT:=pack}"
+: "${BUFFER_PREALLOC:=true}"
+# : "${EMA_UPDATE_TYPE:=fp16}"
+# : "${DIST_LAMB:=true}"
+: "${MULTILAYER_LSTM:=true}"
+: "${ENABLE_PREFETCH:=true}"
+# : "${BATCH_SPLIT_FACTOR:=4}"
+: "${TOKENIZED_TRANSCRIPT:=true}"
+: "${DIST_SAMPLER:=true}"
+: "${MIN_SEQ_SPLIT_LEN:=20}"
+: "${APEX_MLP:=true}"
+# : "${PRE_SORT_FOR_SEQ_SPLIT:=true}"
+: "${JIT_TENSOR_FORMATION:=true}"
+
+: ${META_DIR:="/metadata"}
+: ${TRAIN_MANIFESTS:="$META_DIR/librispeech-train-clean-100-wav-tokenized.pkl \
+                      $META_DIR/librispeech-train-clean-360-wav-tokenized.pkl \
+                      $META_DIR/librispeech-train-other-500-wav-tokenized.pkl"}
+# : ${TRAIN_MANIFESTS:="$META_DIR/librispeech-train-clean-100-wav-tokenized.pkl"}
+: ${VAL_MANIFESTS:="$META_DIR/librispeech-dev-clean-wav-tokenized.pkl"}
+
+# : ${TRAIN_MANIFESTS:="$DATASET_DIR/librispeech-train-clean-100-wav.json \
+#                       $DATASET_DIR/librispeech-train-clean-360-wav.json \
+#                       $DATASET_DIR/librispeech-train-other-500-wav.json"}
+# # : ${TRAIN_MANIFESTS:="$DATASET_DIR/librispeech-train-clean-100-wav.json"}
+# : ${VAL_MANIFESTS:="$DATASET_DIR/librispeech-dev-clean-wav.json"}
 
 
-# mpirun -genv OMP_NUM_THREADS=32 -map-by socket -n 2 -ppn 2 -hosts sr112 -print-rank-map \
-# -genv I_MPI_PIN_DOMAIN=socket -genv OMP_PROC_BIND=true -genv KMP_BLOCKTIME=1 -genv KMP_AFFINITY=granularity=fine,compact,1,0 \
-# /opt/intel/oneapi/intelpython/latest/envs/pytorch/bin/python -u train.py ${ARGS} --dist_backend mpi 2>&1 | tee log.log
+: "${DIST:=false}"
+: "${DIST_BACKEND:=ccl}"
 
 
-export LD_LIBRARY_PATH=/opt/intel/oneapi/intelpython/python3.7/envs/pytorch_mlperf/lib/python3.7/site-packages/torch/lib/
-source /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/.local/env/setvars.sh
-export MASTER_ADDR="sr112"
-export MASTER_PORT="29500"
+: ${OUTPUT_DIR:="./results"}
+: ${TARGET:=0.058}
+
+# start timing
+start=$(date +%s)
+start_fmt=$(date +%Y-%m-%d\ %r)
+echo "STARTING TIMING RUN AT $start_fmt"
+
+# run benchmark
+echo "running benchmark"
+
+export DATASET_DIR
+export TORCH_HOME="$(pwd)/torch-model-cache"
 
 
-mpiexec.hydra -np 2 -ppn 2 -hosts sr112 -genv I_MPI_PIN_DOMAIN [0x3fffc,0xffff00000,] -genv OMP_PROC_BIND true \
-               -genv KMP_BLOCKTIME 1 -genv KMP_AFFINITY granularity=fine,compact,1,0 -genv OMP_NUM_THREADS 16 \
-               -map-by socket -print-rank-map \
-               /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/bin/python -u train.py ${ARGS} --dist_backend ccl 2>&1 | tee log.log
+mkdir -p results
+# run training
+ARGS="--batch_size=$BATCHSIZE \
+  --beta1=${BETA1} \
+  --beta2=${BETA2} \
+  --max_duration=${MAX_TRAIN_DURATION} \
+  --val_batch_size=$EVAL_BATCHSIZE \
+  --target=${TARGET} \
+  --lr=${LR} \
+  --min_lr=1e-5 \
+  --lr_exp_gamma=${LR_DECAY_POWER} \
+  --epochs=$EPOCH \
+  --warmup_epochs=$WARMUP \
+  --hold_epochs=$HOLD_EPOCHS \
+  --epochs_this_job=0 \
+  --ema=$EMA \
+  --output_dir ${OUTPUT_DIR} \
+  --model_config=$MODELCONFIG \
+  --seed $SEED \
+  --dataset_dir=${DATASET_DIR} \
+  --dali_device $DALIDEVICE \
+  --weight_decay=1e-3 \
+  --log_frequency=${LOG_FREQUENCY} \
+  --val_frequency=$VAL_FREQUENCY \
+  --grad_accumulation_steps=$GRAD_ACCUMULATION_STEPS \
+  --prediction_frequency=1000000 \
+  --weights_init_scale=${WEIGHTS_INIT_SCALE} \
+  --val_manifests=${VAL_MANIFESTS} \
+  --train_manifests ${TRAIN_MANIFESTS}"
 
-# mpiexec.hydra -np 2 -ppn 2 -hosts sr112 -genv I_MPI_PIN_DOMAIN [0xffffffffc,0xffffffffc000000000,] -genv OMP_PROC_BIND true \
-#                -genv KMP_BLOCKTIME 1 -genv KMP_AFFINITY granularity=fine,compact,1,0 -genv OMP_NUM_THREADS 16 \
-#                -map-by socket -print-rank-map \
-#                /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/bin/python -u train.py ${ARGS} --dist_backend ccl 2>&1 | tee log.log
+if [ $BUCKET -ne 0 ]; then
+  ARGS="${ARGS} --num_buckets=${BUCKET}"
+fi
+if [ $MAX_SYMBOL -gt 0 ]; then
+  ARGS="${ARGS} --max_symbol_per_sample=${MAX_SYMBOL}"
+fi
+if [ "$APEX_LOSS" = "fp16" ] || [ "$APEX_LOSS" = "fp32" ]; then
+  ARGS="${ARGS} --apex_transducer_loss=${APEX_LOSS}"
+fi
+if [ "$FUSE_RELU_DROPOUT" = true ]; then
+  ARGS="${ARGS} --fuse_relu_dropout"
+fi
+if [ "$MULTI_TENSOR_EMA" = true ]; then
+  ARGS="${ARGS} --multi_tensor_ema"
+fi
+if [ "$BATCH_EVAL_MODE" = "no_cg" ] || [ "$BATCH_EVAL_MODE" = "cg" ] || [ "$BATCH_EVAL_MODE" = "cg_unroll_pipeline" ]; then
+  ARGS="${ARGS} --batch_eval_mode ${BATCH_EVAL_MODE}"
+fi
+if [ "$DIST_LAMB" = true ]; then
+  ARGS="${ARGS} --dist_lamb"
+fi
+if [ "$APEX_JOINT" = "pack" ] || [ "$APEX_JOINT" = "not_pack" ]; then
+  ARGS="${ARGS} --apex_transducer_joint=${APEX_JOINT}"
+fi
+if [ "$BUFFER_PREALLOC" = true ]; then
+  ARGS="${ARGS} --buffer_pre_alloc"
+fi
+if [ "$EMA_UPDATE_TYPE" = "fp16" ] || [ "$EMA_UPDATE_TYPE" = "fp32" ]; then
+  ARGS="${ARGS} --ema_update_type=${EMA_UPDATE_TYPE}"
+fi
+if [ "$DIST" = true ]; then
+  ARGS="${ARGS} --dist --dist_backend=${DIST_BACKEND}"
+fi
+
+[ ! -z "${AMP_LVL}" ] && ARGS+=" --amp_level ${AMP_LVL}"
+[ ! -z "${DATA_CPU_THREADS}" ] && ARGS+=" --data_cpu_threads ${DATA_CPU_THREADS}"
+[ ! -z "${BATCH_SPLIT_FACTOR}" ] && ARGS+=" --batch_split_factor ${BATCH_SPLIT_FACTOR}"
+[ ! -z "${NUM_CG}" ] && ARGS+=" --num_cg ${NUM_CG}"
+[ ! -z "${MIN_SEQ_SPLIT_LEN}" ] && ARGS+=" --min_seq_split_len ${MIN_SEQ_SPLIT_LEN}"
+[ ! -z "${DWU_GROUP_SIZE}" ] && ARGS+=" --dwu_group_size ${DWU_GROUP_SIZE}"
+[ "${VECTORIZED_SA}" = true ] && ARGS+=" --vectorized_sa"
+[ "${MULTILAYER_LSTM}" = true ] && ARGS+=" --multilayer_lstm"
+[ "${IN_MEM_FILE_LIST}" = true ] && ARGS+=" --in_mem_file_list"
+[ "${ENABLE_PREFETCH}" = true ] && ARGS+=" --enable_prefetch"
+[ "${TOKENIZED_TRANSCRIPT}" = true ] && ARGS+=" --tokenized_transcript"
+[ "${VECTORIZED_SAMPLER}" = true ] && ARGS+=" --vectorized_sampler"
+[ "${SEQ_LEN_STATS}" = true ] && ARGS+=" --enable_seq_len_stats"
+[ "${DIST_SAMPLER}" = true ] && ARGS+=" --dist_sampler"
+[ "${APEX_MLP}" = true ] && ARGS+=" --apex_mlp"
+[ "${PRE_SORT_FOR_SEQ_SPLIT}" = true ] && ARGS+=" --pre_sort_for_seq_split"
+[ "${JIT_TENSOR_FORMATION}" = true ] && ARGS+=" --jit_tensor_formation"
+[ "${DALI_DONT_USE_MMAP}" = true ] && ARGS+=" --dali_dont_use_mmap"
+
+
+if [ "$DIST" = true ]; then
+  echo "Distributed training"
+  export CCL_WORKER_COUNT=2
+  export CCL_WORKER_AFFINITY="0,1,18,19"
+  export I_MPI_PIN_PROCESSOR_EXCLUDE_LIST="0,1,18,19"
+
+  # export LD_LIBRARY_PATH=/opt/intel/oneapi/intelpython/python3.7/envs/pytorch_mlperf/lib/python3.7/site-packages/torch/lib/
+  source /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/.local/env/setvars.sh
+  export MASTER_ADDR="sr112"
+  export MASTER_PORT="29500"
+
+  mpiexec.hydra -np 2 -ppn 2 -hosts sr112 -genv I_MPI_PIN_DOMAIN [0x3fffc,0xffff00000,] -genv OMP_PROC_BIND true \
+    -genv KMP_BLOCKTIME 1 -genv KMP_AFFINITY granularity=fine,compact,1,0 -genv OMP_NUM_THREADS 16 \
+    -map-by socket -print-rank-map \
+    /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/bin/python -u train.py ${ARGS} 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
+  ret_code=$?
+
+else
+  echo "Training"
+  export OMP_NUM_THREADS=32
+  source /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/.local/env/setvars.sh
+  
+  /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/bin/python -u train.py ${ARGS} 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
+  ret_code=$?
+fi
+
+set +x
+
+sleep 3
+if [[ $ret_code != 0 ]]; then exit $ret_code; fi
+
+# end timing
+end=$(date +%s)
+end_fmt=$(date +%Y-%m-%d\ %r)
+echo "ENDING TIMING RUN AT $end_fmt"
+
+# report result
+result=$(( $end - $start ))
+result_name="RNN_SPEECH_RECOGNITION"
+
+echo "RESULT,$result_name,,$result,nvidia,$start_fmt"
+
