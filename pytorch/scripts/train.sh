@@ -186,6 +186,7 @@ fi
 [ "${DALI_DONT_USE_MMAP}" = true ] && ARGS+=" --dali_dont_use_mmap"
 
 
+source /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/.local/env/setvars.sh
 if [ "$DIST" = true ]; then
   echo "Distributed training"
   export CCL_WORKER_COUNT=2
@@ -193,22 +194,19 @@ if [ "$DIST" = true ]; then
   export I_MPI_PIN_PROCESSOR_EXCLUDE_LIST="0,1,18,19"
 
   # export LD_LIBRARY_PATH=/opt/intel/oneapi/intelpython/python3.7/envs/pytorch_mlperf/lib/python3.7/site-packages/torch/lib/
-  source /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/.local/env/setvars.sh
   export MASTER_ADDR="sr112"
   export MASTER_PORT="29500"
 
   mpiexec.hydra -np 2 -ppn 2 -hosts sr112 -genv I_MPI_PIN_DOMAIN [0x3fffc,0xffff00000,] -genv OMP_PROC_BIND true \
     -genv KMP_BLOCKTIME 1 -genv KMP_AFFINITY granularity=fine,compact,1,0 -genv OMP_NUM_THREADS 16 \
     -map-by socket -print-rank-map \
-    /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/bin/python -u train.py ${ARGS} 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
+    /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/bin/python -u train.py ${ARGS} --enable_profile 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
   ret_code=$?
 
 else
   echo "Training"
   export OMP_NUM_THREADS=32
-  source /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/.local/env/setvars.sh
-  
-  /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/bin/python -u train.py ${ARGS} 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
+  /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/bin/python -u train.py ${ARGS} --enable_profile 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
   ret_code=$?
 fi
 
