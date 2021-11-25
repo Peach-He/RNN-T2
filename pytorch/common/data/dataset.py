@@ -229,5 +229,5 @@ def get_data_loader(dataset, batch_size, world_size, rank, shuffle=True,
         dataset=dataset,
         collate_fn=collate_fn,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=False
     )

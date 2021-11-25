@@ -21,14 +21,13 @@ import time
 import torch
 import multiprocessing
 import numpy as np
-import torch.distributed as dist
-from apex import amp
-from torch.cuda.amp import GradScaler
-from apex.optimizers import FusedLAMB
-from apex.parallel import DistributedDataParallel
-from apex.contrib.optimizers.distributed_fused_lamb import DistributedFusedLAMB
-import amp_C
+# import torch.distributed as dist
+# from torch.cuda.amp import GradScaler
 import math
+# import intel_pytorch_extension as ipex
+import torch_optimizer as optim
+from torch.nn.parallel import DistributedDataParallel as DDP
+import distributed as dist
 
 from common import helpers
 from common.data.dali import sampler as dali_sampler
@@ -42,7 +41,7 @@ from common.tb_dllogger import flush_log, init_log, log
 from rnnt import config
 from rnnt.decoder import RNNTGreedyDecoder
 from rnnt.loss import RNNTLoss
-from rnnt.loss import apexTransducerLoss
+# from rnnt.loss import apexTransducerLoss
 from rnnt.model import RNNT
 from rnnt.rnnt_graph import RNNTGraph
 
@@ -96,6 +95,8 @@ def parse_args():
     training.add_argument('--min_seq_split_len', default=-1, type=int, help='Split sequences in a mini-batch to improve performance')
     training.add_argument('--pre_sort_for_seq_split', action='store_true', 
                             help='Presort samples in a mini-batch so that seq split is more effective')
+    training.add_argument('--dist', action='store_true', default=False, help='Enable distributed training')
+    training.add_argument('--dist_backend', type=str, default='gloo', help='Distributed training backend')
 
 
     optim = parser.add_argument_group('optimization setup')
@@ -205,36 +206,13 @@ def parse_args():
 
 
 @torch.no_grad()
-def apply_ema(optimizer, model, ema_model, decay, ema_update_type):
+def apply_ema(model, ema_model, decay):
     if not decay:
         return
 
-    ema_model_weight_list = list(ema_model.parameters())
-    if ema_update_type == "fp32":
-        model_weight_list = list(amp.master_params(optimizer))
-    elif ema_update_type == "fp16":
-        model_weight_list = list(model.parameters())
-    for ema, source in zip(ema_model_weight_list, model_weight_list):
-        ema.copy_(decay * ema + (1 - decay) * source)
-
-def init_multi_tensor_ema(optimizer, model, ema_model, ema_update_type):
-    # Regardless of the ema_update_type, ema_accumulation_type is FP32, which is
-    # ensured by FP32 ema_model
-    ema_model_weight_list = list(ema_model.parameters())
-    if ema_update_type == "fp32":
-        model_weight_list = list(amp.master_params(optimizer))
-    elif ema_update_type == "fp16":
-        model_weight_list = list(model.parameters())
-    overflow_buf_for_ema = torch.cuda.IntTensor([0])
-    return ema_model_weight_list, model_weight_list, overflow_buf_for_ema
-
-def apply_multi_tensor_ema(model_weight_list, ema_model_weight_list, decay, overflow_buf):
-    if not decay:
-        return
-
-    amp_C.multi_tensor_axpby(65536, overflow_buf, [ema_model_weight_list, model_weight_list, ema_model_weight_list], decay, 1-decay, -1)
-
-
+    sd = getattr(model, 'module', model).state_dict()
+    for k, v in ema_model.state_dict().items():
+        v.copy_(decay * v + (1 - decay) * sd[k])
 
 
 @torch.no_grad()
@@ -246,13 +224,13 @@ def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
     greedy_decoder.update_ema_model_eval(ema_model)
 
     for i, batch in enumerate(val_loader):
-        # print(f'{val_loader.pipeline_type} evaluation: {i:>10}/{len(val_loader):<10}', end='\r')
+        print(f'{val_loader.pipeline_type} evaluation: {i:>10}/{len(val_loader):<10}', end='\r')
 
         audio, audio_lens, txt, txt_lens = batch
 
         feats, feat_lens = val_feat_proc([audio, audio_lens])
-        if amp_level == 2:
-            feats = feats.half()
+        # if amp_level == 2:
+        #     feats = feats.half()
         
         pred = greedy_decoder.decode(feats, feat_lens)
         agg['preds'] += helpers.gather_predictions([pred], detokenize)
@@ -268,11 +246,8 @@ def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
     return wer
 
 
-def train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_lens, optimizer, grad_scaler, 
-                meta_data, train_loader, rnnt_graph, copy_stream, pred_stream):
-    # sync free loss
-    lr_cpu = torch.tensor(0, dtype=torch.float, device='cpu').pin_memory()
-    loss_cpu = torch.tensor(0, dtype=torch.float16, device='cpu').pin_memory()
+def train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_lens, 
+                meta_data, train_loader, rnnt_graph):
     if args.batch_split_factor == 1:
         if rnnt_graph is not None:
             log_probs, log_prob_lens = rnnt_graph.step(feats, feat_lens, txt, txt_lens, meta_data[0])
@@ -286,30 +261,16 @@ def train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_len
             train_loader.data_iterator().prefetch()
         loss /= args.grad_accumulation_steps
 
-        # copy loss to cpu asynchronously
-        copy_stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(copy_stream):
-            loss_cpu.copy_(loss.detach(), non_blocking=True)
-            if args.dist_lamb:
-                lr_cpu.copy_(optimizer._lr, non_blocking=True)
-
         del log_probs, log_prob_lens
 
-        if args.dist_lamb:
-            grad_scaler.scale(loss).backward()
-        else:
-            with amp.scale_loss(loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
-
-        # sync before return         
-        copy_stream.synchronize()
-        if torch.isnan(loss_cpu).any():
+        loss.backward()
+        if torch.isnan(loss).any():
             raise Exception("Loss is NaN")
 
-        return loss_cpu.item(), lr_cpu.item()
+        return loss.item()
 
     else:
-        f, g, log_prob_lens = model.enc_pred(feats, feat_lens, txt, txt_lens, pred_stream)
+        f, g, log_prob_lens = model.enc_pred(feats, feat_lens, txt, txt_lens)
         f_2, g_2 = f.detach(), g.detach()
         f_2.requires_grad = True
         g_2.requires_grad = True
@@ -328,53 +289,48 @@ def train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_len
                 train_loader.data_iterator().prefetch()
             
             loss /= (args.grad_accumulation_steps*args.batch_split_factor)
-
-            # copy loss to cpu asynchronously
-            copy_stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(copy_stream):
-                loss_cpu.copy_(loss.detach(), non_blocking=True)
-                if args.dist_lamb and i == 0:
-                    # only need to copy lr for once
-                    lr_cpu.copy_(optimizer._lr, non_blocking=True)
-
             del log_probs
+            loss.backward()
 
-            if args.dist_lamb:
-                grad_scaler.scale(loss).backward()
-            else:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-
-            copy_stream.synchronize()
-            if torch.isnan(loss_cpu).any():
+            if torch.isnan(loss).any():
                 raise Exception("Loss is NaN")
 
-            loss_item += loss_cpu.item()
+            loss_item += loss.item()
         
         f.backward(f_2.grad)
         g.backward(g_2.grad)
 
-        return loss_item, lr_cpu.item()
+        return loss_item,
 
 def main():
     args = parse_args()
     logging.configure_logger(args.output_dir, 'RNNT')
     logging.log_start(logging.constants.INIT_START)
 
-    assert(torch.cuda.is_available())
     assert args.prediction_frequency is None or args.prediction_frequency % args.log_frequency == 0
 
-    torch.backends.cudnn.benchmark = args.cudnn_benchmark
-
     # set up distributed training
-    multi_gpu = args.dist_lamb or (int(os.environ.get('WORLD_SIZE', 1)) > 1)
-    if multi_gpu:
-        torch.cuda.set_device(args.local_rank)
-        dist.init_process_group(backend='nccl', init_method='env://')
-        world_size = dist.get_world_size()
-        print_once(f'Distributed training with {world_size} GPUs\n')
+    if args.dist or (int(os.environ.get('WORLD_SIZE', 1)) > 1):
+        dist.init_distributed(backend=args.dist_backend)
+        world_size = dist.my_size
     else:
         world_size = 1
+    use_gpu = torch.cuda.is_available()
+    if use_gpu:
+        torch.cuda.manual_seed_all(args.numpy_rand_seed)
+        torch.backends.cudnn.deterministic = True
+        if world_size > 1:
+            torch.cuda.set_device(args.local_rank)
+            ngpus = torch.cuda.device_count()  # 1
+            # ngpus = 1
+            device = torch.device("cuda", dist.my_local_rank)
+        else:
+            device = torch.device("cuda", 0)
+            ngpus = torch.cuda.device_count()  # 1
+        print("Using {} GPU(s)...".format(ngpus))
+    else:
+        device = torch.device("cpu")
+        print("Using CPU...")
 
     if args.seed is not None:
         logging.log_event(logging.constants.SEED, value=args.seed)
@@ -383,7 +339,7 @@ def main():
         random.seed(args.seed + args.local_rank)
         # np_rng is used for buckets generation, and needs the same seed on every worker
         sampler_seed = args.seed
-        if multi_gpu:
+        if world_size > 1:
             dali_seed = args.seed + dist.get_rank()
         else:
             dali_seed = args.seed
@@ -402,12 +358,11 @@ def main():
         assert batch_size % args.batch_split_factor == 0, f'{batch_size} % {args.batch_split_factor} != 0'
         assert args.dist_lamb, "dist LAMB must be used when batch split is enabled"
 
-    num_nodes = os.environ.get('SLURM_JOB_NUM_NODES', 1)
     logging.log_event(logging.constants.SUBMISSION_BENCHMARK, value=logging.constants.RNNT)
-    logging.log_event(logging.constants.SUBMISSION_ORG, value='NVIDIA')
+    logging.log_event(logging.constants.SUBMISSION_ORG, value='Intel')
     logging.log_event(logging.constants.SUBMISSION_DIVISION, value=logging.constants.CLOSED) # closed or open
     logging.log_event(logging.constants.SUBMISSION_STATUS, value=logging.constants.ONPREM) # on-prem/cloud/research
-    logging.log_event(logging.constants.SUBMISSION_PLATFORM, value=f'{num_nodes}xSUBMISSION_PLATFORM_PLACEHOLDER')
+    logging.log_event(logging.constants.SUBMISSION_PLATFORM, value='CPU')
 
     # set up the model，获取tokenizer
     tokenizer_kw = config.tokenizer(cfg)
@@ -417,31 +372,26 @@ def main():
     logging.log_event(logging.constants.MODEL_WEIGHTS_INITIALIZATION_SCALE, value=args.weights_init_scale)
     if args.fuse_relu_dropout:
         rnnt_config["fuse_relu_dropout"] = True
-    if args.apex_transducer_joint is not None:
-        rnnt_config["apex_transducer_joint"] = args.apex_transducer_joint
+    # if args.apex_transducer_joint is not None:
+    #     rnnt_config["apex_transducer_joint"] = args.apex_transducer_joint
     if args.weights_init_scale is not None:
         rnnt_config['weights_init_scale'] = args.weights_init_scale
     if args.hidden_hidden_bias_scale is not None:
         rnnt_config['hidden_hidden_bias_scale'] = args.hidden_hidden_bias_scale
     if args.multilayer_lstm:
         rnnt_config["decoupled_rnns"] = False
-    if args.apex_mlp:
-        rnnt_config["apex_mlp"] = True
-    enc_stack_time_factor = rnnt_config["enc_stack_time_factor"]
+    # if args.apex_mlp:
+    #     rnnt_config["apex_mlp"] = True
     # 创建模型
     model = RNNT(n_classes=tokenizer.num_labels + 1, **rnnt_config)
-    model.cuda()
+    # model.cuda()
     blank_idx = tokenizer.num_labels
     # 创建loss function
-    if args.apex_transducer_loss == None:
-        loss_fn = RNNTLoss(blank_idx=blank_idx)
-    else:
-        if args.apex_transducer_loss == "fp16":
-            assert args.amp_level in [1, 2], "model in FP32 and loss in FP16 is not a valid use case"
-        loss_fn = apexTransducerLoss(blank_idx, args.apex_transducer_loss, packed_input=args.apex_transducer_joint=="pack")
+    loss_fn = RNNTLoss(blank_idx=blank_idx)
 
     # set up evaluation
     logging.log_event(logging.constants.EVAL_MAX_PREDICTION_SYMBOLS, value=args.max_symbol_per_sample)
+    ####################diff#######################
     greedy_decoder = RNNTGreedyDecoder( blank_idx=blank_idx,
                                         batch_eval_mode=args.batch_eval_mode,
                                         cg_unroll_factor = args.cg_unroll_factor,
@@ -452,7 +402,7 @@ def main():
     print_once(f'Model size: {num_weights(model) / 10**6:.1f}M params\n')
 
     if args.ema > 0:
-        ema_model = copy.deepcopy(model).cuda()
+        ema_model = copy.deepcopy(model)
     else:
         ema_model = None
     logging.log_event(logging.constants.MODEL_EVAL_EMA_FACTOR, value=args.ema)
@@ -460,55 +410,21 @@ def main():
     # set up optimization
     opt_eps=1e-9
     # 创建optimizer
-    if args.dist_lamb:
-        model.half()
-        initial_lrs = args.lr * torch.tensor(1, device='cuda', dtype=torch.float)
-        kw = {  'params': model.parameters(), 
-                'lr': initial_lrs,
-                'weight_decay': args.weight_decay,
-                'eps': opt_eps,
-                'betas': (args.beta1, args.beta2),
-                'max_grad_norm': args.clip_norm,
-                'overlap_reductions': True,
-                'dwu_group_size': args.dwu_group_size,
-                'use_nvlamb': False,
-                "dwu_num_blocks": 2,
-                "dwu_num_chunks": 2,
-                "dwu_num_rs_pg": 1,
-                "dwu_num_ar_pg": 1,
-                "dwu_num_ag_pg": 2,
-                "bias_correction": True
-                }
-        optimizer = DistributedFusedLAMB(**kw)
-        # Prevent following communicators to lock the tree
-        os.environ["NCCL_SHARP_DISABLE"] = "1"
-        grad_scaler = GradScaler(init_scale=512)
-        print_once(f'Starting with LRs: {initial_lrs}')
-    else:
-        grad_scaler = None
-        kw = {'params': model.parameters(), 'lr': args.lr,
-              'max_grad_norm': args.clip_norm,
-              'weight_decay': args.weight_decay}
+    kw = {'params': model.parameters(), 'lr': args.lr,
+          'weight_decay': args.weight_decay}
 
-        initial_lrs = args.lr
+    initial_lrs = args.lr
 
-        print_once(f'Starting with LRs: {initial_lrs}')
-        optimizer = FusedLAMB(betas=(args.beta1, args.beta2), eps=opt_eps, **kw)
-
-        model, optimizer = amp.initialize(
-            models=model,
-            optimizers=optimizer,
-            opt_level=f'O{args.amp_level}',
-            max_loss_scale=512.0,
-            cast_model_outputs=torch.float16 if args.amp_level == 2 else None)
+    print_once(f'Starting with LRs: {initial_lrs}')
+    optimizer = optim.Lamb(betas=(args.beta1, args.beta2), eps=opt_eps, **kw)
 
     adjust_lr = lambda step, epoch: lr_policy(
             step, epoch, initial_lrs, optimizer, steps_per_epoch=steps_per_epoch,
             warmup_epochs=args.warmup_epochs, hold_epochs=args.hold_epochs,
             min_lr=args.min_lr, exp_gamma=args.lr_exp_gamma, dist_lamb=args.dist_lamb)
     # data parallel
-    if not args.dist_lamb and multi_gpu:
-        model = DistributedDataParallel(model)
+    if world_size > 1:
+        model = DDP(model)
 
     print_once('Setting up datasets...')
     (
@@ -547,6 +463,7 @@ def main():
     logging.log_event(logging.constants.GLOBAL_BATCH_SIZE,
                       value=batch_size * world_size * args.grad_accumulation_steps)
 
+    ###################diff####################
     class PermuteAudio(torch.nn.Module):
         def forward(self, x):
             return (x[0].permute(2, 0, 1), *x[1:])
@@ -582,9 +499,7 @@ def main():
     train_feat_proc = train_augmentations
     val_feat_proc   = val_augmentations
 
-    train_feat_proc.cuda()
-    val_feat_proc.cuda()
-
+    ############### diff ######################3
     train_preproc = Preproc(train_feat_proc, args.dist_lamb, args.apex_transducer_joint, args.batch_split_factor, cfg)
 
 
@@ -616,44 +531,12 @@ def main():
         dict_meta_data = {"batch": args.val_batch_size, "max_feat_len": max_seq_len}
         greedy_decoder.capture_cg_for_eval(ema_model, dict_meta_data)
 
-    # warm up optimizer
-    def optimizer_warm_up():
-        WARMUP_LEN = 8
-        feats = torch.ones(WARMUP_LEN , batch_size, rnnt_config["in_feats"], dtype=torch.float16, device='cuda')
-        feat_lens = torch.ones(batch_size, dtype=torch.int32, device='cuda') * WARMUP_LEN 
-        txt = torch.ones(batch_size, WARMUP_LEN , dtype=torch.int64, device='cuda')
-        txt_lens = torch.ones(batch_size, dtype=torch.int32, device='cuda') * WARMUP_LEN 
-        dict_meta_data = train_preproc.get_packing_meta_data(feats.size(0), feat_lens, txt_lens)
-        log_probs, log_prob_lens = model(feats, feat_lens, txt, txt_lens, dict_meta_data)
-        loss = loss_fn(log_probs, log_prob_lens, txt, txt_lens, dict_meta_data)
-        loss /= args.grad_accumulation_steps
-        del log_probs, log_prob_lens
-
-        assert not torch.isnan(loss).any(), "should not have happened"
-        if args.dist_lamb:
-            optimizer._lazy_init_stage1()
-            grad_scaler.scale(loss).backward()
-            optimizer._lazy_init_stage2()
-        else:
-            with amp.scale_loss(loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
-        optimizer.zero_grad()   # Don't really want to do the update
-        if args.dist_lamb:
-            optimizer.complete_reductions()
-            optimizer.set_global_scale(grad_scaler._get_scale_async())
-            grad_scaler.step(optimizer)
-            grad_scaler.update()
-        else:
-            optimizer.step()
-
-    if args.dist_lamb:
-        optimizer_warm_up()
 
     logging.log_end(logging.constants.INIT_STOP)
-    if multi_gpu:
+    if world_size > 1:
         torch.distributed.barrier()
     logging.log_start(logging.constants.RUN_START)
-    if multi_gpu:
+    if world_size > 1:
         torch.distributed.barrier()
 
     if args.pre_sort_for_seq_split and not args.vectorized_sampler:
@@ -696,7 +579,7 @@ def main():
         synthetic_seq_len = [args.synthetic_audio_seq_len, args.synthetic_text_seq_len]
     else:
         raise Exception("synthetic seq length for both text and audio need to be specified")
-    train_loader = DaliDataLoader(gpu_id=args.local_rank,
+    train_loader = DaliDataLoader(gpu_id=None,
                                   dataset_path=args.dataset_dir,
                                   config_data=train_dataset_kw,
                                   config_features=train_features_kw,
@@ -720,7 +603,7 @@ def main():
                                   dont_use_mmap=args.dali_dont_use_mmap)
 
 
-    val_loader = DaliDataLoader(gpu_id=args.local_rank,
+    val_loader = DaliDataLoader(gpu_id=None,
                                 dataset_path=args.dataset_dir,
                                 config_data=val_dataset_kw,
                                 config_features=val_features_kw,
@@ -776,41 +659,6 @@ def main():
 
     # training loop
     model.train()
-    if args.multi_tensor_ema == True:
-        ema_model_weight_list, model_weight_list, overflow_buf_for_ema = init_multi_tensor_ema(optimizer, model, ema_model, args.ema_update_type)
-
-    copy_stream = torch.cuda.Stream()
-    pred_stream = torch.cuda.Stream()
-    def buffer_pre_allocation():
-        max_seq_len = math.ceil(train_preproc.audio_duration_to_seq_len(
-                                                    cfg['input_train']['audio_dataset']['max_duration'], 
-                                                    after_subsampling=False,
-                                                    after_stack_time=False
-                                                    ) 
-                        * cfg["input_train"]["audio_dataset"]["speed_perturbation"]["max_rate"])
-        max_txt_len = train_loader.data_iterator().max_txt_len
-        print_once(f'Pre-allocate buffer with max_seq_len of %d and max_txt_len of %d' % (max_seq_len, max_txt_len))
-        audio = torch.ones(batch_size, cfg["input_val"]["filterbank_features"]["n_filt"], max_seq_len, dtype=torch.float32, device='cuda')
-        audio_lens = torch.ones(batch_size, dtype=torch.int32, device='cuda') * max_seq_len
-        txt = torch.ones(batch_size, max_txt_len, dtype=torch.int64, device='cuda')
-        txt_lens = torch.ones(batch_size, dtype=torch.int32, device='cuda') * max_txt_len
-        feats, feat_lens = train_feat_proc([audio, audio_lens])
-        if args.dist_lamb:
-            feats = feats.half()
-
-        meta_data = []
-        B_split = batch_size // args.batch_split_factor
-        for i in range(args.batch_split_factor):
-            meta_data.append(train_preproc.get_packing_meta_data(   feats.size(0), 
-                                                                    feat_lens[i*B_split:(i+1)*B_split], 
-                                                                    txt_lens[i*B_split:(i+1)*B_split]))
-
-        train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_lens, optimizer, 
-                    grad_scaler, meta_data, None, rnnt_graph, copy_stream, pred_stream)
-
-
-    if args.buffer_pre_alloc:
-        buffer_pre_allocation()
 
     training_start_time = time.time()
     training_utts = 0
@@ -834,10 +682,7 @@ def main():
 
         for batch in train_loader:
             if accumulated_batches == 0:
-                if not args.dist_lamb:
-                    optimizer.zero_grad()
-                else:
-                    optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad()
                 adjust_lr(step, epoch)
                 step_utts = 0
                 all_feat_lens = []
@@ -849,8 +694,6 @@ def main():
             else:
                 audio, audio_lens, txt, txt_lens = batch
                 feats, feat_lens = train_feat_proc([audio, audio_lens])
-                if args.dist_lamb:
-                    feats = feats.half()
                 meta_data = []
                 B_split = batch_size // args.batch_split_factor
                 for i in range(args.batch_split_factor):
@@ -863,8 +706,8 @@ def main():
 
 
 
-            loss_item, lr_item = train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_lens, optimizer, 
-                                    grad_scaler, meta_data, train_loader, rnnt_graph, copy_stream, pred_stream)
+            loss_item= train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_lens,
+                                    meta_data, train_loader, rnnt_graph)
 
 
             step_utts += txt_lens.size(0) * world_size
@@ -872,19 +715,8 @@ def main():
             accumulated_batches += 1
             if accumulated_batches % args.grad_accumulation_steps == 0:
 
-                if args.dist_lamb:
-                    optimizer.complete_reductions()
-                    optimizer.set_global_scale(grad_scaler._get_scale_async())
-                    grad_scaler.step(optimizer)
-                    grad_scaler.update()
-
-                else:
-                    optimizer.step()
-
-                if args.multi_tensor_ema == True:
-                    apply_multi_tensor_ema(model_weight_list, ema_model_weight_list, args.ema, overflow_buf_for_ema)
-                else:
-                    apply_ema(optimizer, ema_model, args.ema)
+                optimizer.step()
+                apply_ema(model, ema_model, args.ema)
 
                 if step % args.log_frequency == 0:
 

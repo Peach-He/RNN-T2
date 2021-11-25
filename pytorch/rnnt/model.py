@@ -20,16 +20,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from mlperf import logging
-from apex.mlp import MLP
 
 from common.rnn import rnn
-from apex.contrib.transducer import TransducerJoint
 
-torch._C._jit_set_nvfuser_enabled(True)
-torch._C._jit_set_texpr_fuser_enabled(False)
-torch._C._jit_override_can_fuse_on_cpu(False)
-torch._C._jit_override_can_fuse_on_gpu(False)
-torch._C._jit_set_bailout_depth(20)
+# torch._C._jit_set_nvfuser_enabled(True)
+# torch._C._jit_set_texpr_fuser_enabled(False)
+# torch._C._jit_override_can_fuse_on_cpu(False)
+# torch._C._jit_override_can_fuse_on_gpu(False)
+# torch._C._jit_set_bailout_depth(20)
 
 class StackTime(nn.Module):
     def __init__(self, factor):
@@ -178,16 +176,7 @@ class RNNT(nn.Module):
         logging.log_event(logging.constants.WEIGHTS_INITIALIZATION,
                           metadata=dict(tensor='joint_enc'))
 
-        if apex_mlp:
-            # make sure we use the same weight initialization 
-            linear_dummy = torch.nn.Linear(joint_n_hid, n_classes)
-            fc = MLP([joint_n_hid, n_classes], activation='none')
-            with torch.no_grad():
-                fc.weights[0].copy_(linear_dummy.weight)
-                fc.biases[0].copy_(linear_dummy.bias)
-            del linear_dummy
-        else:
-            fc = torch.nn.Linear(joint_n_hid, n_classes)  
+        fc = torch.nn.Linear(joint_n_hid, n_classes)  
 
         if fuse_relu_dropout:
             self.joint_net = nn.Sequential(
@@ -204,9 +193,6 @@ class RNNT(nn.Module):
                               metadata=dict(tensor='joint_net'))
         self.apex_transducer_joint = apex_transducer_joint
 
-        if self.apex_transducer_joint is not None:
-            self.my_transducer_joint= TransducerJoint(
-                                        pack_output=(self.apex_transducer_joint=='pack'))
         self.min_lstm_bs = min_lstm_bs
 
     def forward(self, x, x_lens, y, y_lens, dict_meta_data=None, state=None):
@@ -221,15 +207,12 @@ class RNNT(nn.Module):
 
         return out, x_lens
 
-    def enc_pred(self, x, x_lens, y, y_lens, pred_stream, state=None):
-        pred_stream.wait_stream(torch.cuda.current_stream())
+    def enc_pred(self, x, x_lens, y, y_lens, state=None):
         f, x_lens = self.encode(x, x_lens)
 
-        with torch.cuda.stream(pred_stream):
-            y = label_collate(y)
-            g, _ = self.predict(y, state)
+        y = label_collate(y)
+        g, _ = self.predict(y, state)
 
-        torch.cuda.current_stream().wait_stream(pred_stream)
         return f, g, x_lens
 
     def _seq_merge(self, x):
@@ -354,19 +337,12 @@ class RNNT(nn.Module):
         """
         # Combine the input states and the output states
 
-        if apex_transducer_joint is None:
-            f = f.unsqueeze(dim=2)   # (B, T, 1, H)
-            g = g.unsqueeze(dim=1)   # (B, 1, U + 1, H)
-            h = f + g
-
-            B, T, U, H = h.size()
-            res = self.joint_net(h.view(-1, H))
-            res = res.view(B, T, U, -1)
-        else:
-            h = self.my_transducer_joint(f, g, f_len, dict_meta_data["g_len"], 
-                                            dict_meta_data["batch_offset"], 
-                                            dict_meta_data["packed_batch"])  
-            res = self.joint_net(h)
+        f = f.unsqueeze(dim=2)   # (B, T, 1, H)
+        g = g.unsqueeze(dim=1)   # (B, 1, U + 1, H)
+        h = f + g
+        B, T, U, H = h.size()
+        res = self.joint_net(h.view(-1, H))
+        res = res.view(B, T, U, -1)
 
         del f, g
         return res

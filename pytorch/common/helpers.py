@@ -17,8 +17,6 @@ import os
 import re
 from collections import OrderedDict
 
-from apex import amp
-
 import torch
 import torch.distributed as dist
 
@@ -109,14 +107,14 @@ def process_evaluation_epoch(aggregates):
     if multi_gpu:
         if eloss is not None:
             eloss /= dist.get_world_size()
-            eloss_tensor = torch.tensor(eloss).cuda()
+            eloss_tensor = torch.tensor(eloss)
             dist.all_reduce(eloss_tensor)
             eloss = eloss_tensor.item()
 
-        scores_tensor = torch.tensor(scores).cuda()
+        scores_tensor = torch.tensor(scores)
         dist.all_reduce(scores_tensor)
         scores = scores_tensor.item()
-        num_words_tensor = torch.tensor(num_words).cuda()
+        num_words_tensor = torch.tensor(num_words)
         dist.all_reduce(num_words_tensor)
         num_words = num_words_tensor.item()
         wer = scores * 1.0 / num_words
@@ -176,7 +174,6 @@ class Checkpointer(object):
             'state_dict': unwrap_ddp(model).state_dict(),
             'ema_state_dict': unwrap_ddp(ema_model).state_dict() if ema_model is not None else None,
             'optimizer': optimizer.state_dict(),
-            'amp': amp.state_dict() if self.use_amp else None,
         }
 
         if is_best:
@@ -235,8 +232,6 @@ class Checkpointer(object):
 
         optimizer.load_state_dict(checkpoint['optimizer'])
 
-        if self.use_amp:
-            amp.load_state_dict(checkpoint['amp'])
 
         meta['start_epoch'] = checkpoint.get('epoch')
         meta['best_wer'] = checkpoint.get('best_wer', meta['best_wer'])
@@ -250,7 +245,7 @@ class Preproc():
         self.window_stride = cfg["input_val"]["filterbank_features"]["window_stride"]
         self.frame_subsampling =  cfg["input_val"]["frame_splicing"]["frame_subsampling"]
         self.batch_split_factor = batch_split_factor
-        self.list_packed_batch_cpu = [torch.tensor(0, dtype=torch.int64, device='cpu').pin_memory() 
+        self.list_packed_batch_cpu = [torch.tensor(0, dtype=torch.int64, device='cpu')
                                         for i in range(self.batch_split_factor)]
 
     def preproc_func(self, audio, audio_shape):

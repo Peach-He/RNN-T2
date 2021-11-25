@@ -220,7 +220,7 @@ class VectorizedBucketingSampler(SimpleSampler):
         lengths = [output_files[name]['duration'] for name in names]
         labels = np.array([output_files[name]['label'] for name in names])
 
-        dur = torch.tensor(lengths, device='cuda')
+        dur = torch.tensor(lengths, device='cpu')
         len_ids = dur.argsort()
         buckets = len_ids.tensor_split(self.num_buckets)
         padded_buckets = torch.nn.utils.rnn.pad_sequence(buckets, padding_value=-1, batch_first=True)
@@ -229,10 +229,10 @@ class VectorizedBucketingSampler(SimpleSampler):
             torch.random.manual_seed(self.seed)
             self.seed += 1
 
-            buckets_shuffler = torch.rand(self.num_epochs, *padded_buckets.shape, device='cuda')
+            buckets_shuffler = torch.rand(self.num_epochs, *padded_buckets.shape, device='cpu')
             shuffle_columnvise = buckets_shuffler.argsort(dim=2)
             epochs, num_buckets, samples = shuffle_columnvise.shape
-            shift = torch.arange(0, samples*num_buckets, samples, device='cuda').view(1, -1, 1)
+            shift = torch.arange(0, samples*num_buckets, samples, device='cpu').view(1, -1, 1)
             shuffle_globalvise = shuffle_columnvise + shift
 
             shuffled_buckets = padded_buckets.take(shuffle_globalvise)
@@ -242,8 +242,8 @@ class VectorizedBucketingSampler(SimpleSampler):
             epochs, samples = unpadded.shape
 
             to_drop = samples - (samples // gbs * gbs)
-            mask = torch.ones_like(unpadded, dtype=bool, device='cuda')
-            removed_samples = torch.rand(unpadded.shape, device='cuda').argsort(dim=1)[:, :to_drop]
+            mask = torch.ones_like(unpadded, dtype=bool, device='cpu')
+            removed_samples = torch.rand(unpadded.shape, device='cpu').argsort(dim=1)[:, :to_drop]
             epoch_idx = torch.arange(self.num_epochs).view(-1, 1).expand(self.num_epochs, to_drop)
             mask[epoch_idx.flatten(), removed_samples.flatten()] = False
 
@@ -251,16 +251,16 @@ class VectorizedBucketingSampler(SimpleSampler):
             _, num_iterations, _ = batch_aligned.shape
 
             epochs, num_batches, bs = batch_aligned.view(self.num_epochs, -1, gbs).shape
-            new_order = torch.rand(epochs, num_batches, device='cuda')
+            new_order = torch.rand(epochs, num_batches, device='cpu')
             nwo = new_order.argsort(dim=1).view(-1, num_batches, 1) * bs \
-                + torch.arange(0, bs, 1, device='cuda').view(1,1,-1) \
-                + torch.arange(0, epochs*num_batches*bs, num_batches*bs,device='cuda').view(-1, 1, 1)
+                + torch.arange(0, bs, 1, device='cpu').view(1,1,-1) \
+                + torch.arange(0, epochs*num_batches*bs, num_batches*bs,device='cpu').view(-1, 1, 1)
 
             out = batch_aligned.take(nwo)
             if self.pre_sort:
                 # At this point, the mini-batch has been formed. Now we can arrange work to each GPU
                 pert_range = self.config_data['speed_perturbation']['max_rate'] - self.config_data['speed_perturbation']['min_rate']
-                self.pert_coeff = torch.rand(out.size(0), out.size(1), out.size(2), device="cuda") * pert_range + self.config_data['speed_perturbation']['min_rate']
+                self.pert_coeff = torch.rand(out.size(0), out.size(1), out.size(2), device="cpu") * pert_range + self.config_data['speed_perturbation']['min_rate']
                 dur_after_pert = dur[out] * self.pert_coeff
                 idx_asc = dur_after_pert.argsort(dim=-1)
                 idx_des = torch.flip(idx_asc, dims=[-1])

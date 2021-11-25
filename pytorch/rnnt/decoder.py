@@ -20,7 +20,6 @@ import torch.nn.functional as F
 from .model import label_collate
 import math
 import copy
-import amp_C
 
 def graph_simple(func_or_module,
                  sample_args,
@@ -550,7 +549,7 @@ class RNNTGreedyDecoder:
             current_label]
 
         
-        batch_complete_cpu = torch.tensor(False, dtype=torch.bool, device='cpu').pin_memory()
+        batch_complete_cpu = torch.tensor(False, dtype=torch.bool, device='cpu')
         copy_stream = torch.cuda.Stream()
         while True:
             list_input_tensor = [label_tensor, hidden[0], hidden[1], time_idx, label_idx, complete_mask, num_symbol_added, num_total_symbol, 

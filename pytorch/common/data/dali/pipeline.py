@@ -127,7 +127,7 @@ class DaliPipeline(nvidia.dali.pipeline.Pipeline):
                                             num_shards=n_shards, shuffle_after_epoch=shuffle)
         else:
             # sampler.get_file_list_path()    # still want to model this cost
-            self.read = ops.readers.File(name="Reader", dont_use_mmap=dont_use_mmap, pad_last_batch=(pipeline_type == 'val'), device="cpu", file_root=file_root, file_list="/workspace/rnnt/rnnt_dali.file_list.synth", shard_id=shard_id,
+            self.read = ops.readers.File(name="Reader", dont_use_mmap=dont_use_mmap, pad_last_batch=(pipeline_type == 'val'), device="cpu", file_root=file_root, file_list="./rnnt/rnnt_dali.file_list.synth", shard_id=shard_id,
                                        num_shards=n_shards, shuffle_after_epoch=shuffle)
 
         # TODO change ExternalSource to Uniform for new DALI release
@@ -276,5 +276,5 @@ class DaliPipeline(nvidia.dali.pipeline.Pipeline):
         audio = self.pad(audio)
 
         # When modifying DALI pipeline returns, make sure you update `output_map` in DALIGenericIterator invocation
-        return audio.gpu(), label, audio_len.gpu()
+        return audio, label, audio_len
 

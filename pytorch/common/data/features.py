@@ -19,7 +19,6 @@ import librosa
 import torch
 import torch.nn as nn
 
-from apex import amp
 
 
 class BaseFeatures(nn.Module):
@@ -34,11 +33,7 @@ class BaseFeatures(nn.Module):
 
     def __call__(self, x):
         audio, audio_lens = x
-        if self.optim_level == 1:
-            with amp.disable_casts():
-                return self.calculate_features(audio, audio_lens)
-        else:
-            return self.calculate_features(audio, audio_lens)
+        return self.calculate_features(audio, audio_lens)
 
 
 class SpecAugment(BaseFeatures):
@@ -123,16 +118,16 @@ class VectorizedSpecAugment(SpecAugment):
 
         b, h, w = x.shape
 
-        time_shape   = torch.randint(self.min_time, int(round(w * self.max_time)) + 1, [b, self.time_masks, 1], device='cuda')
-        time_anchors = (torch.rand([b, self.time_masks, 1], device='cuda') * (w - time_shape)).round().int()
-        time_idx     = torch.linspace(0, w-1, w, dtype=int, device='cuda')
+        time_shape   = torch.randint(self.min_time, int(round(w * self.max_time)) + 1, [b, self.time_masks, 1], device='cpu')
+        time_anchors = (torch.rand([b, self.time_masks, 1], device='cpu') * (w - time_shape)).round().int()
+        time_idx     = torch.linspace(0, w-1, w, dtype=int, device='cpu')
         time_mask   = (
             (time_idx >= time_anchors) * (time_idx <= time_anchors + time_shape)
         ).any(dim=1)
 
-        freq_shape   = torch.randint(self.min_freq, self.max_freq + 1, [b, self.freq_masks, 1], device='cuda')
-        freq_anchors = (torch.rand([b, self.freq_masks, 1], device='cuda') * (h - freq_shape)).round().int()
-        freq_idx     = torch.linspace(0, h-1, h, dtype=int, device='cuda')
+        freq_shape   = torch.randint(self.min_freq, self.max_freq + 1, [b, self.freq_masks, 1], device='cpu')
+        freq_anchors = (torch.rand([b, self.freq_masks, 1], device='cpu') * (h - freq_shape)).round().int()
+        freq_idx     = torch.linspace(0, h-1, h, dtype=int, device='cpu')
         freq_mask   = (
             (freq_idx >= freq_anchors) * (freq_idx <= freq_anchors + freq_shape)
         ).any(dim=1)

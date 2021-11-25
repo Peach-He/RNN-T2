@@ -70,11 +70,10 @@ class DaliRnntIterator(object):
         self.tokenize(transcripts)
         self.synthetic_text_seq_len = synthetic_text_seq_len
         self.enable_prefetch = enable_prefetch
-        self.prefetch_stream = torch.cuda.Stream()
         self.preproc = preproc
         self.pipeline_type = pipeline_type
         self.min_seq_split_len = min_seq_split_len
-        self.pivot_len_cpu = torch.tensor(0, dtype=torch.int, device='cpu').pin_memory()      
+        self.pivot_len_cpu = torch.tensor(0, dtype=torch.int, device='cpu')    
 
 
     def tokenize(self, transcripts):
@@ -108,7 +107,7 @@ class DaliRnntIterator(object):
         transcripts = [torch.tensor(self.tr[i]) for i in ids] if self.jit_tensor_formation else self.tr[ids]
         transcripts = torch.nn.utils.rnn.pad_sequence(transcripts, batch_first=True)
 
-        return transcripts.cuda(), self.t_sizes[ids].cuda()
+        return transcripts, self.t_sizes[ids]
 
     def fetch_next(self):
         data = self.dali_it.__next__()
@@ -156,9 +155,6 @@ class DaliRnntIterator(object):
 
     def __next__(self):
         if self.enable_prefetch:
-            torch.cuda.current_stream().wait_stream(self.prefetch_stream)
-            # make sure all async copies are committed
-            self.prefetch_stream.synchronize()
             if self.prefetched_data is None:
                 raise StopIteration
             else:
@@ -180,11 +176,10 @@ class DaliRnntIterator(object):
             return self.fetch_next()
 
     def prefetch(self):
-        with torch.cuda.stream(self.prefetch_stream):
-            try:
-                self.prefetched_data = self.fetch_next()
-            except StopIteration:
-                self.prefetched_data = None
+        try:
+            self.prefetched_data = self.fetch_next()
+        except StopIteration:
+            self.prefetched_data = None
 
     def __iter__(self):
         return self
