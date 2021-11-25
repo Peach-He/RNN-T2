@@ -24,7 +24,7 @@ import numpy as np
 # import torch.distributed as dist
 # from torch.cuda.amp import GradScaler
 import math
-# import intel_pytorch_extension as ipex
+import intel_pytorch_extension as ipex
 import torch_optimizer as optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 import distributed as dist
@@ -97,6 +97,7 @@ def parse_args():
                             help='Presort samples in a mini-batch so that seq split is more effective')
     training.add_argument('--dist', action='store_true', default=False, help='Enable distributed training')
     training.add_argument('--dist_backend', type=str, default='gloo', help='Distributed training backend')
+    training.add_argument('--use_ipex', action='store_true', default=False, help='Enable IPEX backend')
 
 
     optim = parser.add_argument_group('optimization setup')
@@ -217,7 +218,7 @@ def apply_ema(model, ema_model, decay):
 
 @torch.no_grad()
 def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
-             ema_model, loss_fn, greedy_decoder, amp_level):
+             ema_model, loss_fn, greedy_decoder, amp_level, use_ipex, device):
     logging.log_start(logging.constants.EVAL_START, metadata=dict(epoch_num=epoch))
     start_time = time.time()
     agg = {'preds': [], 'txts': [], 'idx': []}
@@ -229,6 +230,10 @@ def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
         audio, audio_lens, txt, txt_lens = batch
 
         feats, feat_lens = val_feat_proc([audio, audio_lens])
+        if use_ipex:
+            feats = [f.to(device) for f in feats] if isinstance(feats, list) else feats.to(device)
+            feat_lens = [fl.to(device) for fl in feat_lens] if isinstance(feat_lens, list) else feat_lens.to(device)
+
         # if amp_level == 2:
         #     feats = feats.half()
         
@@ -247,7 +252,12 @@ def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
 
 
 def train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_lens, 
-                meta_data, train_loader, rnnt_graph):
+                meta_data, train_loader, rnnt_graph, use_ipex, device):
+    if use_ipex:
+        feats = [f.to(device) for f in feats] if isinstance(feats, list) else feats.to(device)
+        feat_lens = [fl.to(device) for fl in feat_lens] if isinstance(feat_lens, list) else feat_lens.to(device)
+        txt = [t.to(device) for t in txt] if isinstance(txt, list) else txt.to(device)
+        txt_lens = [tl.to(device) for tl in txt_lens] if isinstance(txt_lens, list) else txt_lens.to(device)
     if args.batch_split_factor == 1:
         if rnnt_graph is not None:
             log_probs, log_prob_lens = rnnt_graph.step(feats, feat_lens, txt, txt_lens, meta_data[0])
@@ -328,6 +338,8 @@ def main():
             device = torch.device("cuda", 0)
             ngpus = torch.cuda.device_count()  # 1
         print("Using {} GPU(s)...".format(ngpus))
+    elif args.use_ipex:
+        device = torch.device("dpcpp")
     else:
         device = torch.device("cpu")
         print("Using CPU...")
@@ -380,10 +392,15 @@ def main():
         rnnt_config['hidden_hidden_bias_scale'] = args.hidden_hidden_bias_scale
     if args.multilayer_lstm:
         rnnt_config["decoupled_rnns"] = False
+    if args.use_ipex:
+        rnnt_config['use_ipex'] = True
     # if args.apex_mlp:
     #     rnnt_config["apex_mlp"] = True
     # 创建模型
     model = RNNT(n_classes=tokenizer.num_labels + 1, **rnnt_config)
+    if args.use_ipex:
+        model = model.to(device)
+        print(model, device, args.use_ipex)
     # model.cuda()
     blank_idx = tokenizer.num_labels
     # 创建loss function
@@ -707,9 +724,7 @@ def main():
 
 
             loss_item= train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_lens,
-                                    meta_data, train_loader, rnnt_graph)
-
-
+                                    meta_data, train_loader, rnnt_graph, args.use_ipex, device)
             step_utts += txt_lens.size(0) * world_size
             epoch_utts += txt_lens.size(0) * world_size
             accumulated_batches += 1
@@ -766,8 +781,7 @@ def main():
         if epoch % args.val_frequency == 0:
             wer = evaluate(epoch, step, val_loader, val_feat_proc,
                            tokenizer.detokenize, ema_model, loss_fn,
-                           greedy_decoder, args.amp_level)
-
+                           greedy_decoder, args.amp_level, args.use_ipex, device)
             last_wer = wer
             if wer < best_wer and epoch >= args.save_best_from:
                 checkpointer.save(model, ema_model, optimizer, epoch,
@@ -800,7 +814,7 @@ def main():
 
     if epoch == args.epochs:
         evaluate(epoch, step, val_loader, val_feat_proc, tokenizer.detokenize,
-                 ema_model, loss_fn, greedy_decoder, args.amp_level)
+                 ema_model, loss_fn, greedy_decoder, args.amp_level, args.use_ipex, device)
 
     flush_log()
     if args.save_at_the_end:

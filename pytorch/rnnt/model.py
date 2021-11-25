@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from mlperf import logging
+import intel_pytorch_extension as ipex
 
 from common.rnn import rnn
 
@@ -107,12 +108,13 @@ class RNNT(nn.Module):
                  hidden_hidden_bias_scale=0.0, weights_init_scale=1.0,
                  enc_lr_factor=1.0, pred_lr_factor=1.0, joint_lr_factor=1.0,
                  fuse_relu_dropout=False, apex_transducer_joint=None,
-                 min_lstm_bs=8, apex_mlp=False):
+                 min_lstm_bs=8, apex_mlp=False, use_ipex=False):
         super(RNNT, self).__init__()
 
         self.enc_lr_factor = enc_lr_factor
         self.pred_lr_factor = pred_lr_factor
         self.joint_lr_factor = joint_lr_factor
+        self.use_ipex = use_ipex
 
         self.pred_n_hid = pred_n_hid
 
@@ -165,6 +167,9 @@ class RNNT(nn.Module):
             ),
         })
 
+        # if self.use_ipex:
+        #     self.joint_pred = ipex.IpexMLPLinear(pred_n_hid, joint_n_hid)
+        # else:
         self.joint_pred = torch.nn.Linear(
             pred_n_hid,
             joint_n_hid)
