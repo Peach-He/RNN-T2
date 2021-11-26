@@ -70,10 +70,10 @@ set -e
 : "${JIT_TENSOR_FORMATION:=true}"
 
 : ${META_DIR:="/metadata"}
-: ${TRAIN_MANIFESTS:="$META_DIR/librispeech-train-clean-100-wav-tokenized.pkl \
-                      $META_DIR/librispeech-train-clean-360-wav-tokenized.pkl \
-                      $META_DIR/librispeech-train-other-500-wav-tokenized.pkl"}
-# : ${TRAIN_MANIFESTS:="$META_DIR/librispeech-train-clean-100-wav-tokenized.pkl"}
+# : ${TRAIN_MANIFESTS:="$META_DIR/librispeech-train-clean-100-wav-tokenized.pkl \
+#                       $META_DIR/librispeech-train-clean-360-wav-tokenized.pkl \
+#                       $META_DIR/librispeech-train-other-500-wav-tokenized.pkl"}
+: ${TRAIN_MANIFESTS:="$META_DIR/librispeech-train-clean-100-wav-tokenized.pkl"}
 : ${VAL_MANIFESTS:="$META_DIR/librispeech-dev-clean-wav-tokenized.pkl"}
 
 # : ${TRAIN_MANIFESTS:="$DATASET_DIR/librispeech-train-clean-100-wav.json \
@@ -83,8 +83,8 @@ set -e
 # : ${VAL_MANIFESTS:="$DATASET_DIR/librispeech-dev-clean-wav.json"}
 
 
-: "${DIST:=false}"
-: "${DIST_BACKEND:=ccl}"
+: "${DIST:=true}"
+: "${DIST_BACKEND:=gloo}"
 
 
 : ${OUTPUT_DIR:="./results"}
@@ -186,7 +186,7 @@ fi
 [ "${DALI_DONT_USE_MMAP}" = true ] && ARGS+=" --dali_dont_use_mmap"
 
 
-source /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/.local/env/setvars.sh
+# source /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/.local/env/setvars.sh
 if [ "$DIST" = true ]; then
   echo "Distributed training"
   export CCL_WORKER_COUNT=2
@@ -200,13 +200,13 @@ if [ "$DIST" = true ]; then
   mpiexec.hydra -np 2 -ppn 2 -hosts sr112 -genv I_MPI_PIN_DOMAIN [0x3fffc,0xffff00000,] -genv OMP_PROC_BIND true \
     -genv KMP_BLOCKTIME 1 -genv KMP_AFFINITY granularity=fine,compact,1,0 -genv OMP_NUM_THREADS 16 \
     -map-by socket -print-rank-map \
-    /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/bin/python -u train.py ${ARGS} --use_ipex 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
+    /opt/intel/oneapi/intelpython/latest/envs/pytorch/bin/python -u train.py ${ARGS} --use_ipex 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
   ret_code=$?
 
 else
   echo "Training"
   export OMP_NUM_THREADS=32
-  /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/bin/python -u train.py ${ARGS} --use_ipex 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
+  /opt/intel/oneapi/intelpython/latest/envs/pytorch/bin/python -u train.py ${ARGS} --use_ipex 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
   ret_code=$?
 fi
 

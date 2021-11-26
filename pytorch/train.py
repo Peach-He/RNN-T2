@@ -339,7 +339,7 @@ def main():
             ngpus = torch.cuda.device_count()  # 1
         print("Using {} GPU(s)...".format(ngpus))
     elif args.use_ipex:
-        device = torch.device("dpcpp")
+        device = ipex.DEVICE
     else:
         device = torch.device("cpu")
         print("Using CPU...")
@@ -399,8 +399,9 @@ def main():
     # 创建模型
     model = RNNT(n_classes=tokenizer.num_labels + 1, **rnnt_config)
     if args.use_ipex:
-        model = model.to(device)
+        model = model.to(ipex.DEVICE)
         print(model, device, args.use_ipex)
+    model = DDP(model, device_ids=[dist.my_rank])
     # model.cuda()
     blank_idx = tokenizer.num_labels
     # 创建loss function
@@ -483,7 +484,7 @@ def main():
     ###################diff####################
     class PermuteAudio(torch.nn.Module):
         def forward(self, x):
-            return (x[0].permute(2, 0, 1), *x[1:])
+            return (x[0].permute(2, 0, 1).contiguous(), *x[1:])
 
     if not train_specaugm_kw:
         train_specaugm = torch.nn.Identity()
