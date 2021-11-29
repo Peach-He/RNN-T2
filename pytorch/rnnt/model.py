@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from mlperf import logging
-import intel_pytorch_extension as ipex
+import intel_extension_for_pytorch as ipex
 
 from common.rnn import rnn
 

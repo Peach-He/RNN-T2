@@ -23,6 +23,8 @@ set -e
 # Only rank print 
 [ "${SLURM_LOCALID-}" -ne 0 ] && set +x
 
+CONDA_PREFIX=/opt/intel/oneapi/intelpython/latest/envs/rnnt
+
 # 设置默认值
 : "${AMP_LVL:=1}"
 : "${DALIDEVICE:=cpu}"
@@ -84,7 +86,7 @@ set -e
 
 
 : "${DIST:=true}"
-: "${DIST_BACKEND:=gloo}"
+: "${DIST_BACKEND:=ccl}"
 
 
 : ${OUTPUT_DIR:="./results"}
@@ -197,16 +199,16 @@ if [ "$DIST" = true ]; then
   export MASTER_ADDR="sr112"
   export MASTER_PORT="29500"
 
-  mpiexec.hydra -np 2 -ppn 2 -hosts sr112 -genv I_MPI_PIN_DOMAIN [0x3fffc,0xffff00000,] -genv OMP_PROC_BIND true \
+  mpiexec.hydra -np 2 -ppn 2 -hosts sr112 -genv I_MPI_PIN_DOMAIN [0x3fffc,0xffff00000,] \
     -genv KMP_BLOCKTIME 1 -genv KMP_AFFINITY granularity=fine,compact,1,0 -genv OMP_NUM_THREADS 16 \
     -map-by socket -print-rank-map \
-    /opt/intel/oneapi/intelpython/latest/envs/pytorch/bin/python -u train.py ${ARGS} --use_ipex 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
+    ${CONDA_PREFIX}/bin/python -u train.py ${ARGS} --use_ipex 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
   ret_code=$?
 
 else
   echo "Training"
   export OMP_NUM_THREADS=32
-  /opt/intel/oneapi/intelpython/latest/envs/pytorch/bin/python -u train.py ${ARGS} --use_ipex 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
+  ${CONDA_PREFIX}/bin/python -u train.py ${ARGS} --use_ipex 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
   ret_code=$?
 fi
 

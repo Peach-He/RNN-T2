@@ -24,7 +24,7 @@ import numpy as np
 # import torch.distributed as dist
 # from torch.cuda.amp import GradScaler
 import math
-import intel_pytorch_extension as ipex
+import intel_extension_for_pytorch as ipex
 import torch_optimizer as optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 import distributed as dist
@@ -338,8 +338,8 @@ def main():
             device = torch.device("cuda", 0)
             ngpus = torch.cuda.device_count()  # 1
         print("Using {} GPU(s)...".format(ngpus))
-    elif args.use_ipex:
-        device = ipex.DEVICE
+    # elif args.use_ipex:
+    #     device = ipex.DEVICE
     else:
         device = torch.device("cpu")
         print("Using CPU...")
@@ -398,10 +398,9 @@ def main():
     #     rnnt_config["apex_mlp"] = True
     # 创建模型
     model = RNNT(n_classes=tokenizer.num_labels + 1, **rnnt_config)
-    if args.use_ipex:
-        model = model.to(ipex.DEVICE)
-        print(model, device, args.use_ipex)
-    model = DDP(model, device_ids=[dist.my_rank])
+    # if args.use_ipex:
+    #     model = model.to(ipex.DEVICE)
+    #     print(model, device, args.use_ipex)
     # model.cuda()
     blank_idx = tokenizer.num_labels
     # 创建loss function
@@ -434,8 +433,11 @@ def main():
     initial_lrs = args.lr
 
     print_once(f'Starting with LRs: {initial_lrs}')
-    optimizer = optim.Lamb(betas=(args.beta1, args.beta2), eps=opt_eps, **kw)
+    # optimizer = optim.Lamb(betas=(args.beta1, args.beta2), eps=opt_eps, **kw, debias=False)
+    optimizer = ipex.optim._lamb.Lamb(betas=(args.beta1, args.beta2), eps=opt_eps, **kw)
 
+    if args.use_ipex:
+        model, optimizer = ipex.optimize(model, optimizer=optimizer)
     adjust_lr = lambda step, epoch: lr_policy(
             step, epoch, initial_lrs, optimizer, steps_per_epoch=steps_per_epoch,
             warmup_epochs=args.warmup_epochs, hold_epochs=args.hold_epochs,
