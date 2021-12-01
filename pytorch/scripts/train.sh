@@ -30,7 +30,7 @@ CONDA_PREFIX=/opt/intel/oneapi/intelpython/latest/envs/rnnt
 : "${DALIDEVICE:=cpu}"
 : "${MODELCONFIG:=configs/baseline_v3-1023sp.yaml}"
 : "${BATCHSIZE:=32}"
-: "${EVAL_BATCHSIZE:=32}"
+: "${EVAL_BATCHSIZE:=64}"
 : "${EPOCH:=80}"
 : "${SEED:=30677}"
 : "${LR:=0.007}"
@@ -72,10 +72,10 @@ CONDA_PREFIX=/opt/intel/oneapi/intelpython/latest/envs/rnnt
 : "${JIT_TENSOR_FORMATION:=true}"
 
 : ${META_DIR:="/metadata"}
-# : ${TRAIN_MANIFESTS:="$META_DIR/librispeech-train-clean-100-wav-tokenized.pkl \
-#                       $META_DIR/librispeech-train-clean-360-wav-tokenized.pkl \
-#                       $META_DIR/librispeech-train-other-500-wav-tokenized.pkl"}
-: ${TRAIN_MANIFESTS:="$META_DIR/librispeech-train-clean-100-wav-tokenized.pkl"}
+: ${TRAIN_MANIFESTS:="$META_DIR/librispeech-train-clean-100-wav-tokenized.pkl \
+                      $META_DIR/librispeech-train-clean-360-wav-tokenized.pkl \
+                      $META_DIR/librispeech-train-other-500-wav-tokenized.pkl"}
+# : ${TRAIN_MANIFESTS:="$META_DIR/librispeech-train-clean-100-wav-tokenized.pkl"}
 : ${VAL_MANIFESTS:="$META_DIR/librispeech-dev-clean-wav-tokenized.pkl"}
 
 # : ${TRAIN_MANIFESTS:="$DATASET_DIR/librispeech-train-clean-100-wav.json \
@@ -191,23 +191,22 @@ fi
 # source /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/.local/env/setvars.sh
 if [ "$DIST" = true ]; then
   echo "Distributed training"
-  export CCL_WORKER_COUNT=2
-  export CCL_WORKER_AFFINITY="0,1,18,19"
-  export I_MPI_PIN_PROCESSOR_EXCLUDE_LIST="0,1,18,19"
+  export CCL_WORKER_COUNT=1
+  export CCL_WORKER_AFFINITY="0,18"
 
   # export LD_LIBRARY_PATH=/opt/intel/oneapi/intelpython/python3.7/envs/pytorch_mlperf/lib/python3.7/site-packages/torch/lib/
   export MASTER_ADDR="sr112"
   export MASTER_PORT="29500"
 
-  mpiexec.hydra -np 2 -ppn 2 -hosts sr112 -genv I_MPI_PIN_DOMAIN [0x3fffc,0xffff00000,] \
-    -genv KMP_BLOCKTIME 1 -genv KMP_AFFINITY granularity=fine,compact,1,0 -genv OMP_NUM_THREADS 16 \
-    -map-by socket -print-rank-map \
+  mpiexec.hydra -np 2 -ppn 2 -hosts sr112 -genv I_MPI_PIN_DOMAIN [0x3fffe,0xffff80000,] \
+    -genv KMP_BLOCKTIME 1 -genv KMP_AFFINITY granularity=fine,compact,1,0 -genv OMP_NUM_THREADS 17 \
+    -print-rank-map \
     ${CONDA_PREFIX}/bin/python -u train.py ${ARGS} --use_ipex 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
   ret_code=$?
 
 else
   echo "Training"
-  export OMP_NUM_THREADS=32
+  export OMP_NUM_THREADS=36
   ${CONDA_PREFIX}/bin/python -u train.py ${ARGS} --use_ipex 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
   ret_code=$?
 fi
