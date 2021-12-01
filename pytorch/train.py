@@ -669,132 +669,138 @@ def main():
 
     training_start_time = time.time()
     training_utts = 0
-    for epoch in range(start_epoch + 1, args.epochs + 1):
+    with torch.profiler.profile(
+        schedule=torch.profiler.schedule(wait=0, warmup=0, active=2, repeat=1, skip_first=3),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler('./results/trace'),
+        with_modules=True) as prof:
+        for epoch in range(start_epoch + 1, args.epochs + 1):
 
-        logging.log_start(logging.constants.BLOCK_START,
-                          metadata=dict(first_epoch_num=epoch,
-                                        epoch_count=1))
-        logging.log_start(logging.constants.EPOCH_START,
-                          metadata=dict(epoch_num=epoch))
+            logging.log_start(logging.constants.BLOCK_START,
+                              metadata=dict(first_epoch_num=epoch,
+                                            epoch_count=1))
+            logging.log_start(logging.constants.EPOCH_START,
+                              metadata=dict(epoch_num=epoch))
 
-        epoch_utts = 0
-        accumulated_batches = 0
-        epoch_start_time = time.time()
-        
+            epoch_utts = 0
+            accumulated_batches = 0
+            epoch_start_time = time.time()
 
-        if args.enable_prefetch:
-            train_loader.data_iterator().prefetch()
 
-        step_start_time = time.time()
-
-        for batch in train_loader:
-            if accumulated_batches == 0:
-                optimizer.zero_grad()
-                adjust_lr(step, epoch)
-                step_utts = 0
-                all_feat_lens = []
-            # feature proc
             if args.enable_prefetch:
-                # when prefetch is enabled, train_feat_proc at prefetch time
-                feats, feat_lens, txt, txt_lens = batch
-                meta_data = train_preproc.meta_data
-            else:
-                audio, audio_lens, txt, txt_lens = batch
-                feats, feat_lens = train_feat_proc([audio, audio_lens])
-                meta_data = []
-                B_split = batch_size // args.batch_split_factor
-                for i in range(args.batch_split_factor):
-                    meta_data.append(train_preproc.get_packing_meta_data(   feats.size(0), 
-                                                                            feat_lens[i*B_split:(i+1)*B_split], 
-                                                                            txt_lens[i*B_split:(i+1)*B_split]))
-                        
-            if args.enable_seq_len_stats:
-                all_feat_lens += feat_lens
+                train_loader.data_iterator().prefetch()
+
+            step_start_time = time.time()
+
+            for batch in train_loader:
+                if accumulated_batches == 0:
+                    optimizer.zero_grad()
+                    adjust_lr(step, epoch)
+                    step_utts = 0
+                    all_feat_lens = []
+                # feature proc
+                if args.enable_prefetch:
+                    # when prefetch is enabled, train_feat_proc at prefetch time
+                    feats, feat_lens, txt, txt_lens = batch
+                    meta_data = train_preproc.meta_data
+                else:
+                    audio, audio_lens, txt, txt_lens = batch
+                    feats, feat_lens = train_feat_proc([audio, audio_lens])
+                    meta_data = []
+                    B_split = batch_size // args.batch_split_factor
+                    for i in range(args.batch_split_factor):
+                        meta_data.append(train_preproc.get_packing_meta_data(   feats.size(0), 
+                                                                                feat_lens[i*B_split:(i+1)*B_split], 
+                                                                                txt_lens[i*B_split:(i+1)*B_split]))
+
+                if args.enable_seq_len_stats:
+                    all_feat_lens += feat_lens
 
 
 
-            loss_item= train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_lens,
-                                    meta_data, train_loader, rnnt_graph)
-            step_utts += txt_lens.size(0) * world_size
-            epoch_utts += txt_lens.size(0) * world_size
-            accumulated_batches += 1
-            if accumulated_batches % args.grad_accumulation_steps == 0:
+                loss_item= train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_lens,
+                                        meta_data, train_loader, rnnt_graph)
+                step_utts += txt_lens.size(0) * world_size
+                epoch_utts += txt_lens.size(0) * world_size
+                accumulated_batches += 1
+                if accumulated_batches % args.grad_accumulation_steps == 0:
 
-                optimizer.step()
-                apply_ema(model, ema_model, args.ema)
+                    optimizer.step()
+                    apply_ema(model, ema_model, args.ema)
 
-                if step % args.log_frequency == 0:
+                    if step % args.log_frequency == 0:
 
-                    if args.prediction_frequency is None or step % args.prediction_frequency == 0:
-                        preds = greedy_decoder.decode(feats, feat_lens)
-                        wer, pred_utt, ref = greedy_wer(
-                                preds,
-                                txt,
-                                txt_lens,
-                                tokenizer.detokenize)
-                        print_once(f'  Decoded:   {pred_utt[:90]}')
-                        print_once(f'  Reference: {ref[:90]}')
-                        wer = {'wer': 100 * wer}
-                    else:
-                        wer = {}
+                        if args.prediction_frequency is None or step % args.prediction_frequency == 0:
+                            preds = greedy_decoder.decode(feats, feat_lens)
+                            wer, pred_utt, ref = greedy_wer(
+                                    preds,
+                                    txt,
+                                    txt_lens,
+                                    tokenizer.detokenize)
+                            print_once(f'  Decoded:   {pred_utt[:90]}')
+                            print_once(f'  Reference: {ref[:90]}')
+                            wer = {'wer': 100 * wer}
+                        else:
+                            wer = {}
 
-                    step_time = time.time() - step_start_time
-                    step_start_time = time.time()
-                    dict_log = {'loss': loss_item,
-                                 **wer,  # optional entry
-                                'throughput': step_utts / step_time,
-                                'took': step_time,
-                                'lrate': optimizer._lr.item() if args.dist_lamb else optimizer.param_groups[0]['lr']} # TODO: eliminate sync
+                        step_time = time.time() - step_start_time
+                        step_start_time = time.time()
+                        dict_log = {'loss': loss_item,
+                                     **wer,  # optional entry
+                                    'throughput': step_utts / step_time,
+                                    'took': step_time,
+                                    'lrate': optimizer._lr.item() if args.dist_lamb else optimizer.param_groups[0]['lr']} # TODO: eliminate sync
 
-                    if args.enable_seq_len_stats:
-                        dict_log["seq-len-min"] = min(all_feat_lens).item()
-                        dict_log["seq-len-max"] = max(all_feat_lens).item()
+                        if args.enable_seq_len_stats:
+                            dict_log["seq-len-min"] = min(all_feat_lens).item()
+                            dict_log["seq-len-max"] = max(all_feat_lens).item()
 
-                    log((epoch, step % steps_per_epoch or steps_per_epoch, steps_per_epoch),
-                        step, 'train', dict_log)
+                        log((epoch, step % steps_per_epoch or steps_per_epoch, steps_per_epoch),
+                            step, 'train', dict_log)
 
 
 
-                step += 1
-                accumulated_batches = 0
-                # end of step
+                    step += 1
+                    accumulated_batches = 0
+                    # end of step
+                prof.step()
 
-        logging.log_end(logging.constants.EPOCH_STOP,
-                        metadata=dict(epoch_num=epoch))
+            logging.log_end(logging.constants.EPOCH_STOP,
+                            metadata=dict(epoch_num=epoch))
 
-        epoch_time = time.time() - epoch_start_time
-        log((epoch,), None, 'train_avg', {'throughput': epoch_utts / epoch_time,
-                                          'took': epoch_time})
-        # logging throughput for dashboard
-        logging.log_event(key='throughput', value= epoch_utts / epoch_time)
+            epoch_time = time.time() - epoch_start_time
+            log((epoch,), None, 'train_avg', {'throughput': epoch_utts / epoch_time,
+                                              'took': epoch_time})
+            # logging throughput for dashboard
+            logging.log_event(key='throughput', value= epoch_utts / epoch_time)
 
-        if epoch % args.val_frequency == 0:
-            wer = evaluate(epoch, step, val_loader, val_feat_proc,
-                           tokenizer.detokenize, ema_model, loss_fn,
-                           greedy_decoder, args.amp_level)
-            last_wer = wer
-            if wer < best_wer and epoch >= args.save_best_from:
-                checkpointer.save(model, ema_model, optimizer, epoch,
-                                  step, best_wer, is_best=True)
-                best_wer = wer
+            if epoch % args.val_frequency == 0:
+                wer = evaluate(epoch, step, val_loader, val_feat_proc,
+                               tokenizer.detokenize, ema_model, loss_fn,
+                               greedy_decoder, args.amp_level)
+                last_wer = wer
+                if wer < best_wer and epoch >= args.save_best_from:
+                    checkpointer.save(model, ema_model, optimizer, epoch,
+                                      step, best_wer, is_best=True)
+                    best_wer = wer
 
-        save_this_epoch = (args.save_frequency is not None and epoch % args.save_frequency == 0) \
-                       or (epoch in args.keep_milestones)
-        if save_this_epoch:
-            checkpointer.save(model, ema_model, optimizer, epoch, step, best_wer)
+            save_this_epoch = (args.save_frequency is not None and epoch % args.save_frequency == 0) \
+                           or (epoch in args.keep_milestones)
+            if save_this_epoch:
+                checkpointer.save(model, ema_model, optimizer, epoch, step, best_wer)
 
-        training_utts += epoch_utts
-        logging.log_end(logging.constants.BLOCK_STOP, metadata=dict(first_epoch_num=epoch))
+            training_utts += epoch_utts
+            logging.log_end(logging.constants.BLOCK_STOP, metadata=dict(first_epoch_num=epoch))
 
-        if last_wer <= args.target:
-            logging.log_end(logging.constants.RUN_STOP, metadata={'status': 'success'})
-            print_once(f'Finished after {args.epochs_this_job} epochs.')
-            break
-        if 0 < args.epochs_this_job <= epoch - start_epoch:
-            print_once(f'Finished after {args.epochs_this_job} epochs.')
-            break
-        # end of epoch
-
+            if last_wer <= args.target:
+                logging.log_end(logging.constants.RUN_STOP, metadata={'status': 'success'})
+                print_once(f'Finished after {args.epochs_this_job} epochs.')
+                break
+            if 0 < args.epochs_this_job <= epoch - start_epoch:
+                print_once(f'Finished after {args.epochs_this_job} epochs.')
+                break
+            # end of epoch
+    
+    print_once(prof.key_averages().table(sort_by='self_cpu_time_total'))
 
     training_time = time.time() - training_start_time
     log((), None, 'train_avg', {'throughput': training_utts / training_time})
