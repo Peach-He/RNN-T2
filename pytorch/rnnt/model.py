@@ -167,9 +167,6 @@ class RNNT(nn.Module):
             ),
         })
 
-        # if self.use_ipex:
-        #     self.joint_pred = ipex.IpexMLPLinear(pred_n_hid, joint_n_hid)
-        # else:
         self.joint_pred = torch.nn.Linear(
             pred_n_hid,
             joint_n_hid)

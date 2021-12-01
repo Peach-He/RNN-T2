@@ -25,7 +25,6 @@ import numpy as np
 # from torch.cuda.amp import GradScaler
 import math
 import intel_extension_for_pytorch as ipex
-import torch_optimizer as optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 import distributed as dist
 
@@ -218,7 +217,7 @@ def apply_ema(model, ema_model, decay):
 
 @torch.no_grad()
 def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
-             ema_model, loss_fn, greedy_decoder, amp_level, use_ipex, device):
+             ema_model, loss_fn, greedy_decoder, amp_level):
     logging.log_start(logging.constants.EVAL_START, metadata=dict(epoch_num=epoch))
     start_time = time.time()
     agg = {'preds': [], 'txts': [], 'idx': []}
@@ -230,9 +229,6 @@ def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
         audio, audio_lens, txt, txt_lens = batch
 
         feats, feat_lens = val_feat_proc([audio, audio_lens])
-        if use_ipex:
-            feats = [f.to(device) for f in feats] if isinstance(feats, list) else feats.to(device)
-            feat_lens = [fl.to(device) for fl in feat_lens] if isinstance(feat_lens, list) else feat_lens.to(device)
 
         # if amp_level == 2:
         #     feats = feats.half()
@@ -252,12 +248,7 @@ def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
 
 
 def train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_lens, 
-                meta_data, train_loader, rnnt_graph, use_ipex, device):
-    if use_ipex:
-        feats = [f.to(device) for f in feats] if isinstance(feats, list) else feats.to(device)
-        feat_lens = [fl.to(device) for fl in feat_lens] if isinstance(feat_lens, list) else feat_lens.to(device)
-        txt = [t.to(device) for t in txt] if isinstance(txt, list) else txt.to(device)
-        txt_lens = [tl.to(device) for tl in txt_lens] if isinstance(txt_lens, list) else txt_lens.to(device)
+                meta_data, train_loader, rnnt_graph):
     if args.batch_split_factor == 1:
         if rnnt_graph is not None:
             log_probs, log_prob_lens = rnnt_graph.step(feats, feat_lens, txt, txt_lens, meta_data[0])
@@ -338,8 +329,6 @@ def main():
             device = torch.device("cuda", 0)
             ngpus = torch.cuda.device_count()  # 1
         print("Using {} GPU(s)...".format(ngpus))
-    # elif args.use_ipex:
-    #     device = ipex.DEVICE
     else:
         device = torch.device("cpu")
         print("Using CPU...")
@@ -398,10 +387,6 @@ def main():
     #     rnnt_config["apex_mlp"] = True
     # 创建模型
     model = RNNT(n_classes=tokenizer.num_labels + 1, **rnnt_config)
-    # if args.use_ipex:
-    #     model = model.to(ipex.DEVICE)
-    #     print(model, device, args.use_ipex)
-    # model.cuda()
     blank_idx = tokenizer.num_labels
     # 创建loss function
     loss_fn = RNNTLoss(blank_idx=blank_idx)
@@ -433,11 +418,12 @@ def main():
     initial_lrs = args.lr
 
     print_once(f'Starting with LRs: {initial_lrs}')
-    # optimizer = optim.Lamb(betas=(args.beta1, args.beta2), eps=opt_eps, **kw, debias=False)
     optimizer = ipex.optim._lamb.Lamb(betas=(args.beta1, args.beta2), eps=opt_eps, **kw)
 
+    # optimize with ipex
     if args.use_ipex:
         model, optimizer = ipex.optimize(model, optimizer=optimizer)
+        print_once(model)
     adjust_lr = lambda step, epoch: lr_policy(
             step, epoch, initial_lrs, optimizer, steps_per_epoch=steps_per_epoch,
             warmup_epochs=args.warmup_epochs, hold_epochs=args.hold_epochs,
@@ -637,6 +623,7 @@ def main():
                                 seed=dali_seed,
                                 tokenized_transcript=args.tokenized_transcript,
                                 in_mem_file_list=args.in_mem_file_list,
+                                jit_tensor_formation=args.jit_tensor_formation,
                                 dont_use_mmap=args.dali_dont_use_mmap)
 
 
@@ -727,7 +714,7 @@ def main():
 
 
             loss_item= train_step( model, loss_fn, args, batch_size, feats, feat_lens, txt, txt_lens,
-                                    meta_data, train_loader, rnnt_graph, args.use_ipex, device)
+                                    meta_data, train_loader, rnnt_graph)
             step_utts += txt_lens.size(0) * world_size
             epoch_utts += txt_lens.size(0) * world_size
             accumulated_batches += 1
@@ -784,7 +771,7 @@ def main():
         if epoch % args.val_frequency == 0:
             wer = evaluate(epoch, step, val_loader, val_feat_proc,
                            tokenizer.detokenize, ema_model, loss_fn,
-                           greedy_decoder, args.amp_level, args.use_ipex, device)
+                           greedy_decoder, args.amp_level)
             last_wer = wer
             if wer < best_wer and epoch >= args.save_best_from:
                 checkpointer.save(model, ema_model, optimizer, epoch,
@@ -817,7 +804,7 @@ def main():
 
     if epoch == args.epochs:
         evaluate(epoch, step, val_loader, val_feat_proc, tokenizer.detokenize,
-                 ema_model, loss_fn, greedy_decoder, args.amp_level, args.use_ipex, device)
+                 ema_model, loss_fn, greedy_decoder, args.amp_level)
 
     flush_log()
     if args.save_at_the_end:
