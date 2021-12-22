@@ -118,6 +118,7 @@ class SimpleSampler:
     def make_files(self, output_files):
         self.files, self.labels = self.process_output_files(output_files)
     # outputfiles: {filename: {label:, duration:}}, transcripts: {label: tokenized_trans}
+    # 从manifest中提取metadata
     def sample(self, file_names, in_mem_file_list, tokenized_transcript):
         output_files, self.transcripts = {}, {}
         max_duration = self.config_data['max_duration']
