@@ -18,6 +18,7 @@
 # to use the script:
 #   run_and_time.sh
 
+set -x
 set -e
 
 # Only rank print 
@@ -30,7 +31,7 @@ CONDA_PREFIX=/opt/intel/oneapi/intelpython/latest/envs/rnnt
 : "${DALIDEVICE:=cpu}"
 : "${MODELCONFIG:=configs/baseline_v3-1023sp.yaml}"
 : "${BATCHSIZE:=32}"
-: "${EVAL_BATCHSIZE:=64}"
+: "${EVAL_BATCHSIZE:=338}"
 : "${EPOCH:=80}"
 : "${SEED:=30677}"
 : "${LR:=0.007}"
@@ -44,7 +45,7 @@ CONDA_PREFIX=/opt/intel/oneapi/intelpython/latest/envs/rnnt
 : "${DATASET_DIR:="/mnt/sdd/LibriSpeech/LibriSpeech"}"
 : "${DALI_ONLY:=false}"
 : "${VECTORIZED_SA:=true}"
-# : "${VECTORIZED_SAMPLER=true}"
+: "${VECTORIZED_SAMPLER=true}"
 : "${LOG_FREQUENCY=1}"
 : "${BETA1:=0.9}"
 : "${BETA2:=0.999}"
@@ -68,7 +69,7 @@ CONDA_PREFIX=/opt/intel/oneapi/intelpython/latest/envs/rnnt
 : "${DIST_SAMPLER:=true}"
 : "${MIN_SEQ_SPLIT_LEN:=20}"
 : "${APEX_MLP:=true}"
-# : "${PRE_SORT_FOR_SEQ_SPLIT:=true}"
+: "${PRE_SORT_FOR_SEQ_SPLIT:=true}"
 : "${JIT_TENSOR_FORMATION:=true}"
 
 : ${META_DIR:="/metadata"}
@@ -89,7 +90,7 @@ CONDA_PREFIX=/opt/intel/oneapi/intelpython/latest/envs/rnnt
 : "${DIST_BACKEND:=ccl}"
 
 
-: ${OUTPUT_DIR:="./results"}
+: ${OUTPUT_DIR:="/results"}
 : ${TARGET:=0.058}
 
 # start timing
@@ -191,17 +192,20 @@ fi
 # source /opt/intel/oneapi/intelpython/latest/envs/pytorch_mlperf/.local/env/setvars.sh
 if [ "$DIST" = true ]; then
   echo "Distributed training"
-  export CCL_WORKER_COUNT=1
-  export CCL_WORKER_AFFINITY="0,18"
+  # export CCL_WORKER_COUNT=1
+  # export CCL_WORKER_AFFINITY="0,18"
 
   # export LD_LIBRARY_PATH=/opt/intel/oneapi/intelpython/python3.7/envs/pytorch_mlperf/lib/python3.7/site-packages/torch/lib/
-  export MASTER_ADDR="sr112"
-  export MASTER_PORT="29500"
+  # export MASTER_ADDR="sr112"
+  # export MASTER_PORT="29500"
 
-  mpiexec.hydra -np 2 -ppn 2 -hosts sr112 -genv I_MPI_PIN_DOMAIN [0x3fffe,0xffff80000,] \
-    -genv KMP_BLOCKTIME 1 -genv KMP_AFFINITY granularity=fine,compact,1,0 -genv OMP_NUM_THREADS 17 \
-    -print-rank-map \
-    ${CONDA_PREFIX}/bin/python -u train.py ${ARGS} --use_ipex 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
+  # mpiexec.hydra -np 2 -ppn 2 -hosts sr112 -genv I_MPI_PIN_DOMAIN [0x3fffe,0xffff80000,] \
+  #   -genv KMP_BLOCKTIME 1 -genv KMP_AFFINITY granularity=fine,compact,1,0 -genv OMP_NUM_THREADS 17 \
+  #   -print-rank-map \
+  #   ${CONDA_PREFIX}/bin/python -u train.py ${ARGS} --use_ipex 2>&1 | tee results/log_`date +"%Y-%m-%d-%s"`.log
+  
+  ${CONDA_PREFIX}/bin/python -m intel_extension_for_pytorch.cpu.launch --distributed --nproc_per_node=2 --nnodes=1 --hostfile sr112 \
+    train.py ${ARGS} --use_ipex
   ret_code=$?
 
 else
