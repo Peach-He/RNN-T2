@@ -184,10 +184,10 @@ class RNNT(nn.Module):
             self.joint_net = nn.Sequential(
                 FusedReluDropout(joint_dropout),
                 fc)
-            self.joiner = nn.ModuleDict({
-                "fused_relu_dropout": FusedReluDropout(joint_dropout),
-                "joint_linear": fc,
-            })
+            # self.joiner = nn.ModuleDict({
+            #     "fused_relu_dropout": FusedReluDropout(joint_dropout),
+            #     "joint_linear": fc,
+            # })
             logging.log_event(logging.constants.WEIGHTS_INITIALIZATION,
                               metadata=dict(tensor='joint_net'))
         else:
@@ -195,11 +195,11 @@ class RNNT(nn.Module):
                 torch.nn.ReLU(inplace=True),
                 torch.nn.Dropout(p=joint_dropout),
                 fc)
-            self.joiner = nn.ModuleDict({
-                "relu": torch.nn.ReLU(inplace=True),
-                # "dropout": torch.nn.Dropout(p=joint_dropout),
-                "joint_linear": fc,
-            })
+            # self.joiner = nn.ModuleDict({
+            #     "relu": torch.nn.ReLU(inplace=True),
+            #     # "dropout": torch.nn.Dropout(p=joint_dropout),
+            #     "joint_linear": fc,
+            # })
             logging.log_event(logging.constants.WEIGHTS_INITIALIZATION,
                               metadata=dict(tensor='joint_net'))
         self.apex_transducer_joint = apex_transducer_joint
@@ -352,10 +352,10 @@ class RNNT(nn.Module):
         g = g.unsqueeze(dim=1)   # (B, 1, U + 1, H)
         h = f + g
         B, T, U, H = h.size()
-        # res = self.joint_net(h.view(-1, H))
-        res = self.joiner["relu"](h.view(-1, H))
+        res = self.joint_net(h.view(-1, H))
+        # res = self.joiner["relu"](h.view(-1, H))
         # res = self.joiner["dropout"](res)
-        res = self.joiner["joint_linear"](res)
+        # res = self.joiner["joint_linear"](res)
         res = res.view(B, T, U, -1)
 
         del f, g

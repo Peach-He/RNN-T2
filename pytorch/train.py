@@ -316,22 +316,6 @@ def main():
         world_size = dist.my_size
     else:
         world_size = 1
-    use_gpu = torch.cuda.is_available()
-    if use_gpu:
-        torch.cuda.manual_seed_all(args.numpy_rand_seed)
-        torch.backends.cudnn.deterministic = True
-        if world_size > 1:
-            torch.cuda.set_device(args.local_rank)
-            ngpus = torch.cuda.device_count()  # 1
-            # ngpus = 1
-            device = torch.device("cuda", dist.my_local_rank)
-        else:
-            device = torch.device("cuda", 0)
-            ngpus = torch.cuda.device_count()  # 1
-        print("Using {} GPU(s)...".format(ngpus))
-    else:
-        device = torch.device("cpu")
-        print("Using CPU...")
 
     if args.seed is not None:
         logging.log_event(logging.constants.SEED, value=args.seed)
@@ -670,7 +654,7 @@ def main():
     training_start_time = time.time()
     training_utts = 0
     with torch.profiler.profile(
-        schedule=torch.profiler.schedule(wait=0, warmup=0, active=2, repeat=1, skip_first=3),
+        schedule=torch.profiler.schedule(wait=0, warmup=0, active=4, repeat=1, skip_first=3),
         on_trace_ready=torch.profiler.tensorboard_trace_handler('./results/trace'),
         with_modules=True) as prof:
         for epoch in range(start_epoch + 1, args.epochs + 1):
